@@ -1,5 +1,8 @@
 """
-animation_v4.py — Adiabatic Gamma Stirling Cycle — qualitative visualization
+animation_v9_3.py — Adiabatic Gamma Stirling Cycle — qualitative visualization
+v9: renamed for version consistency. No physics changes from v8.
+    In Fixed Heat Input mode, app_v9.py passes the solved T_h into params
+    before calling build_engine_animation so the temperature display is correct.
 """
 
 import math, base64, tempfile, os
@@ -11,6 +14,14 @@ import matplotlib.patches as mpatches
 import matplotlib.animation as animation
 from matplotlib.colors import LinearSegmentedColormap
 
+try:
+    import streamlit as st
+    _CACHE = st.cache_data
+except Exception:
+    # Allow import outside Streamlit (e.g. unit tests) without crashing.
+    def _CACHE(fn):
+        return fn
+
 _CMAP = LinearSegmentedColormap.from_list('temp',
     ['#4FC3F7', '#00BCD4', '#66BB6A', '#FFEE58', '#FFA726', '#EF5350'])
 
@@ -18,8 +29,19 @@ def _tc(T, Tk, Th):
     return _CMAP(float(np.clip((T - Tk) / max(Th - Tk, 1.0), 0.0, 1.0)))
 
 
-def build_engine_animation(geom, params):
-    """Returns base64-encoded animated GIF."""
+@_CACHE
+def build_engine_animation(geom_frozen, params_frozen):
+    """
+    Returns base64-encoded animated GIF.
+    Accepts frozen (tuple-of-pairs) representations of geom and params dicts
+    so that @st.cache_data can hash the inputs. The app_v8.py caller converts
+    plain dicts to sorted tuples with _freeze_dict() before calling this.
+
+    Streamlit re-uses the cached GIF as long as both frozen inputs are
+    identical, avoiding a 1–2 s re-render on every unrelated slider change.
+    """
+    geom   = dict(geom_frozen)
+    params = dict(params_frozen)
 
     N_FRAMES = 60
     FPS      = 20
@@ -78,7 +100,7 @@ def build_engine_animation(geom, params):
     yG  = yR - 0.05
 
     fig_x0 = xD0 - 0.80
-    fig_x1 = xG  + 0.55
+    fig_x1 = xG  + 0.75
     fig_y0 = yP  - R_P - W - 0.40
     fig_y1 = yR  + R_R + W + 0.60
 
@@ -443,48 +465,64 @@ def build_engine_animation(geom, params):
             circ(x, yP + jy, 0.045, _tc(T_vis, T_k, T_h),
                  ec='#888', lw=0.4, alpha=0.88, z=7)
 
-        # ── Pressure gauge ────────────────────────────────────────────────────
-        gr = 0.26
-        gy = yG
-        circ(xG, gy, gr, '#F9F9F9', ec='#666', lw=1.5, z=9)
+        # ── Gauge 1: Pressure dial (TOP of panel) ────────────────────────────
+        gr = 0.30
+        gy = yR - 0.10
+        circ(xG, gy, gr, '#F9F9F9', ec='#555', lw=2.0, z=9)
         wedge = mpatches.Wedge((xG, gy), gr*0.88, 20, 160,
                                 fc='#E8F5E9', ec='none', zorder=9)
         ax.add_patch(wedge); artists.append(wedge)
-        for td in range(20, 161, 28):
+        P_span = P_max_c - P_min_c
+        for k, td in enumerate(range(20, 161, 20)):
             a = math.radians(td)
-            line(xG+gr*0.78*math.cos(a), gy+gr*0.78*math.sin(a),
-                 xG+gr*0.93*math.cos(a), gy+gr*0.93*math.sin(a),
-                 c='#666', lw=1.0, z=10)
+            is_major = (k % 2 == 0)
+            r_inner = gr * (0.72 if is_major else 0.80)
+            line(xG + r_inner*math.cos(a),  gy + r_inner*math.sin(a),
+                 xG + gr*0.93*math.cos(a),  gy + gr*0.93*math.sin(a),
+                 c='#555', lw=1.4 if is_major else 0.8, z=10)
+            if is_major:
+                frac_label = (td - 20) / 140.0
+                P_label = P_min_c + frac_label * P_span
+                lx = xG + gr*0.58*math.cos(a)
+                ly = gy + gr*0.58*math.sin(a)
+                t = ax.text(lx, ly, f'{P_label:.2f}',
+                            color='#444', fontsize=6.0, ha='center', va='center', zorder=10)
+                artists.append(t)
         nfrac = float(np.clip((P_now - P_min_c*0.95) /
                                (P_max_c*1.05 - P_min_c*0.95), 0, 1))
         nang  = math.radians(20 + nfrac * 140)
-        line(xG, gy, xG+gr*0.80*math.cos(nang),
-             gy+gr*0.80*math.sin(nang), c='#C62828', lw=2.2, z=11)
-        circ(xG, gy, gr*0.07, '#C62828', ec='none', z=12)
-        txt(xG, gy-gr-0.16, f'P = {P_now:.2f} bar', color='#333', fs=6.5)
-        txt(xG, gy+gr+0.12, 'PRESSURE', color='#333', fs=6, bold=True)
+        line(xG, gy, xG + gr*0.82*math.cos(nang),
+             gy + gr*0.82*math.sin(nang), c='#C62828', lw=2.5, z=11)
+        circ(xG, gy, gr*0.08, '#C62828', ec='#900', lw=1.0, z=12)
+        txt(xG, gy - gr*0.32, f'P = {P_now:.2f} bar',
+            color='#C62828', fs=7.5, bold=True)
+        txt(xG, gy + gr + 0.14, 'PRESSURE', color='#333', fs=7.5, bold=True)
 
-        # ── Thermometer bars ──────────────────────────────────────────────────
-        # Adiabatic: T_e and T_c oscillate slightly with pressure
+        # ── Gauge 2: T_e thermometer (MIDDLE of panel) ───────────────────────
         T_e_now = T_h + (T_h-T_k) * 0.07 * math.sin(theta)
         T_c_now = T_k + (T_h-T_k) * 0.05 * math.sin(theta - phi + math.pi)
 
-        bw = 0.12; bh = 0.55; by = gy - gr - 0.62
-        bx = xG - 0.19
+        bw = 0.14; bh = 0.70
+        # y_bottom = yD - 0.15
+        by_e = yD - 0.15
         fe = float(np.clip((T_e_now - T_k) / (T_h*1.1 - T_k), 0, 1))
-        rect(bx-bw/2, by, bw, bh, '#EEE', ec='#888', lw=1, z=9)
+        rect(xG-bw/2, by_e, bw, bh, '#EEE', ec='#888', lw=1.2, z=9)
         if fe > 0:
-            rect(bx-bw/2, by, bw, bh*fe, _tc(T_e_now, T_k, T_h),
-                 ec='none', alpha=0.9, z=10)
-        txt(bx, by-0.15, f'Tₑ={T_e_now:.0f}K', color='#B71C1C', fs=6.0)
+            rect(xG-bw/2, by_e, bw, bh*fe, _tc(T_e_now, T_k, T_h),
+                 ec='none', alpha=0.92, z=10)
+        txt(xG, by_e + bh + 0.14, 'Tₑ', color='#B71C1C', fs=8, bold=True)
+        txt(xG, by_e - 0.16, f'Tₑ = {T_e_now:.0f} K', color='#B71C1C', fs=7.5, bold=True)
 
-        bx2 = xG + 0.19
+        # ── Gauge 3: T_c thermometer (BOTTOM of panel) ───────────────────────
+        # y_bottom = yP - 0.10
+        by_c = yP - 0.10
         fc2 = float(np.clip((T_c_now - T_k) / (T_h*1.1 - T_k), 0, 1))
-        rect(bx2-bw/2, by, bw, bh, '#EEE', ec='#888', lw=1, z=9)
+        rect(xG-bw/2, by_c, bw, bh, '#EEE', ec='#888', lw=1.2, z=9)
         if fc2 > 0:
-            rect(bx2-bw/2, by, bw, bh*fc2, _tc(T_c_now, T_k, T_h),
-                 ec='none', alpha=0.9, z=10)
-        txt(bx2, by-0.15, f'Tc={T_c_now:.0f}K', color='#1565C0', fs=6.0)
+            rect(xG-bw/2, by_c, bw, bh*fc2, _tc(T_c_now, T_k, T_h),
+                 ec='none', alpha=0.92, z=10)
+        txt(xG, by_c + bh + 0.14, 'Tc', color='#1565C0', fs=8, bold=True)
+        txt(xG, by_c - 0.16, f'Tc = {T_c_now:.0f} K', color='#1565C0', fs=7.5, bold=True)
 
         deg = int(math.degrees(theta)) % 360
         txt(fig_x0+0.15, fig_y1-0.20, f'θ = {deg}°',
