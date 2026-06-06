@@ -1,5 +1,5 @@
 """
-animation_v9_3.py — Adiabatic Gamma Stirling Cycle — qualitative visualization
+animation_v9_4.py — Adiabatic Gamma Stirling Cycle — qualitative visualization
 v9: renamed for version consistency. No physics changes from v8.
     In Fixed Heat Input mode, app_v9.py passes the solved T_h into params
     before calling build_engine_animation so the temperature display is correct.

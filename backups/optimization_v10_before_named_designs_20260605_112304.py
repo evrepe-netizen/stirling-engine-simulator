@@ -1,39 +1,22 @@
 """
-optimization_v8.py — Smart optimization for Stirling engine parameters
-=======================================================================
-Three strategies:
-  1. Coarse→Fine two-stage grid search  (default, always available)
-  2. Latin Hypercube Sampling (LHS)     (scipy.stats.qmc — part of scipy)
-  3. Bayesian Optimization              (scikit-optimize, optional)
-
-Geometry-only sensitivity analysis for Top-3 recommendations.
-Imports only from physics_v8.py — no Streamlit.
-
-v8 changes vs V7:
-  - gap moved to [mm] units in OPTIMIZABLE_PARAMS (0.10–0.50 mm, step 0.05)
-    for human-readable UI display. _to_physics_params() converts gap_mm → m
-    before every simulate() call so physics remain in SI.
-  - gap and L_displacer_effective added to GEOMETRIC_KEYS and param_meta so
-    geometry_sensitivity() evaluates them alongside other geometric parameters.
-
-NOTE on excluded parameters:
-  Porosity, eps_reg, eta_mech, C_leak are coupled material/manufacturing
-  properties. Adjust them manually in the sidebar.
+optimization_v10.py — Smart optimization for Stirling engine parameters
+========================================================================
+v10 additions:
+  - prototype2_search: Stage 2 — locks D_displacer, S_displacer, L_displacer
+  - stage3_search:     Stage 3 — full geometry, Q_in feasibility filter
+  - stage4_search:     Stage 4 — operating conditions on Prototype 2 geometry
+  - STAGE2_LOCKED, STAGE4_OPEN: constant sets for UI enforcement
 """
 
 import numpy as np
 from itertools import product as itertools_product
 
-from physics_v9_3 import simulate, simulate_fixed_heat, PROTOTYPE
+from physics_v10 import simulate, simulate_fixed_heat, PROTOTYPE
 
 # Keys whose optimizer values are in mm but must be converted to m for physics.
-# Currently only 'gap'; L_displacer_effective is kept in metres for SI consistency.
 _MM_TO_M_KEYS = {'gap'}
 
 # ── Parameter definitions ─────────────────────────────────────────────────────
-# (display_name, key, min, max, default_step, units)
-# NOTE: 'gap' is listed in mm here for UI readability.
-#       _to_physics_params() converts it to metres before simulate() calls.
 OPTIMIZABLE_PARAMS = [
     ('Displacer diameter',         'D_displacer',           30,    150,    5,     'mm'),
     ('Displacer stroke',           'S_displacer',           30,    200,    10,    'mm'),
@@ -46,49 +29,36 @@ OPTIMIZABLE_PARAMS = [
     ('Hot temperature',            'T_h',                   573,   1273,   100,   'K'),
     ('Mean pressure',              'P_mean_bar',            1.0,   30.0,   5.0,   'bar'),
     ('Frequency',                  'f',                     5,     50,     5,     'Hz'),
-    # Shuttle-loss parameters.
-    # gap: stored and displayed in mm (0.10–0.50), converted to m for physics.
-    # Bounds enforced to prevent optimizer from making gap unphysically large.
     ('Displacer radial gap',       'gap',                   0.10,  0.50,   0.05,  'mm'),
     ('Effective displacer length', 'L_displacer_effective', 0.05,  0.235,  0.02,  'm'),
     ('Heat Input (Max/Target)',    'Q_in_max',              50,    3000,   50,    'W'),
 ]
-# NOTE: porosity, eps_reg, eta_mech, C_leak are intentionally excluded.
 
-# Geometric params for sensitivity analysis — v8: gap and L_displacer_effective included.
 GEOMETRIC_KEYS = {
     'D_displacer', 'S_displacer', 'D_power', 'S_power',
     'phi_deg', 'D_r', 'L_r', 'd_wire',
     'gap', 'L_displacer_effective',
 }
 
-
-def _to_physics_params(p):
-    """
-    Return a copy of params dict with optimizer mm-unit keys converted to SI
-    before passing to simulate(). Currently converts 'gap': mm → m.
-    """
-    q = dict(p)
-    if 'gap' in q:
-        q['gap'] = q['gap'] * 1e-3   # mm → m
-    return q
-
 EXCLUDED_NOTE = (
     "**Excluded from automated optimization:** porosity, regenerator effectiveness "
     "(ε_reg), mechanical efficiency (η_mech), and seal leakage coefficient (C_leak) "
-    "are coupled material/manufacturing properties. Modify them manually in the sidebar "
-    "when exploring trade-offs."
+    "are coupled material/manufacturing properties. Modify them manually in the sidebar."
 )
+
+
+def _to_physics_params(p):
+    """Convert optimizer mm-unit keys to SI before simulate()."""
+    q = dict(p)
+    if 'gap' in q:
+        q['gap'] = q['gap'] * 1e-3
+    return q
 
 
 def _score(losses, params, objective):
     """
     Scalar score to maximize.
-    Applies a heat_factor penalty: if required heat exceeds the budget
-    (params['Q_in_max']), available power and efficiency are scaled down
-    proportionally. This prevents the optimizer from finding configurations
-    that are theoretically powerful but physically infeasible given the
-    available heat supply.
+    Applies heat_factor penalty if Q_in exceeds Q_in_max budget.
     """
     if losses['W_shaft'] <= 0 or losses['Q_in'] <= 0:
         return -float('inf')
@@ -97,31 +67,27 @@ def _score(losses, params, objective):
     Q_max = params.get('Q_in_max', 3000)
     heat_factor = min(1.0, Q_max / Q_req) if Q_req > 0 else 0.0
 
-    P_avail  = losses['P_brake']  * heat_factor
-    eta_eff  = losses['eta_brake'] * heat_factor
+    P_avail = losses['P_brake']   * heat_factor
+    eta_eff = losses['eta_brake'] * heat_factor
 
     if objective == 'power':
         return P_avail
     elif objective == 'efficiency':
         return eta_eff
-    else:   # balanced
+    else:
         return P_avail * eta_eff
 
 
-# ── Shared simulate helper ────────────────────────────────────────────────────
 def _run_sim(p, model_key, losses_flags, driving_mode):
     """
-    Run the correct simulation depending on driving mode.
-    In Fixed Heat Input mode, uses simulate_fixed_heat with p['Q_in_max'].
-    In Fixed T_h mode (default), uses the standard simulate().
-    Always applies _to_physics_params() for mm→m gap conversion.
+    Run correct simulation depending on driving mode.
+    Always applies _to_physics_params() for mm→m conversion.
     """
     phys_p = _to_physics_params(p)
     if driving_mode == "Fixed Heat Input (Q_in)":
         return simulate_fixed_heat(
             phys_p, phys_p.get('Q_in_max', 500),
-            model=model_key, losses_flags=losses_flags
-        )
+            model=model_key, losses_flags=losses_flags)
     return simulate(phys_p, model=model_key, losses_flags=losses_flags)
 
 
@@ -133,9 +99,6 @@ def coarse_fine_search(base_params, open_specs, objective, model_key,
     Two-stage grid search.
       Stage 1: 4 values per parameter (coarse sweep).
       Stage 2: 5 values in ±20% neighborhood of best coarse point.
-
-    open_specs: list of (key, min_val, max_val).
-    driving_mode: passed through to _run_sim to choose Fixed T_h vs Fixed Q_in.
     Returns (best_params, best_losses, all_results_list).
     """
     keys   = [s[0] for s in open_specs]
@@ -201,8 +164,7 @@ def coarse_fine_search(base_params, open_specs, objective, model_key,
 
     sim_best    = _run_sim(best_params, model_key, losses_flags, driving_mode)
     best_losses = sim_best['losses'] if sim_best else (
-        all_results[0][2] if all_results else None
-    )
+        all_results[0][2] if all_results else None)
     return best_params, best_losses, all_results
 
 
@@ -252,7 +214,7 @@ def lhs_search(base_params, open_specs, objective, model_key,
     return best_params, best_losses, all_results
 
 
-# ── 3. Bayesian Optimization (optional) ──────────────────────────────────────
+# ── 3. Bayesian Optimization ──────────────────────────────────────────────────
 def bayesian_search(base_params, open_specs, objective, model_key,
                     losses_flags, n_calls=60,
                     driving_mode="Fixed Hot Temperature (T_h)", progress_cb=None):
@@ -306,18 +268,11 @@ def bayesian_search(base_params, open_specs, objective, model_key,
     return bp, best_losses, all_results
 
 
-# ── Geometry-only sensitivity analysis (v7: full-range global sweep) ─────────
+# ── Geometry-only sensitivity analysis ───────────────────────────────────────
 def geometry_sensitivity(base_params, losses_flags, n_points=20):
     """
-    Global sensitivity: sweep each geometric parameter across its ENTIRE
-    allowed range (n_points evenly spaced values) with all other parameters
-    held constant, and find the absolute best value for each.
-
-    v7 change vs V6: replaced local ±10% perturbation with a full-range sweep
-    so each recommendation is a true global optimum for that single parameter.
-
-    Returns list of (key, display_name, units, base_val, best_val, delta_W, pct)
-    sorted by delta_W descending (largest improvement first).
+    Global sensitivity: sweep each geometric parameter across its full allowed
+    range. Returns list of (key, name, units, base_val, best_val, delta_W, pct).
     """
     sim_base = simulate(base_params, model='schmidt', losses_flags=losses_flags)
     if sim_base is None:
@@ -333,8 +288,6 @@ def geometry_sensitivity(base_params, losses_flags, n_points=20):
         'D_r':                    ('Regen diameter',        'mm',  20,    100),
         'L_r':                    ('Regen length',          'mm',  50,    400),
         'd_wire':                 ('Wire diameter',         'mm',  0.5,   3.0),
-        # Shuttle-loss geometry — v8 addition to sensitivity sweep.
-        # gap is stored in mm here for display; converted to m before simulate().
         'gap':                    ('Displacer gap',         'mm',  0.10,  0.50),
         'L_displacer_effective':  ('Effective disp. length','m',   0.05,  0.235),
     }
@@ -348,12 +301,10 @@ def geometry_sensitivity(base_params, losses_flags, n_points=20):
         if base_val is None:
             continue
 
-        # For gap: base_val is in metres in params dict; display range is mm.
-        # Convert base_val to mm for sweep, convert back to m for simulate().
         gap_key = (key == 'gap')
         if gap_key:
-            base_val_display = base_val * 1e3   # m → mm for display
-            sweep = np.linspace(pmin, pmax, n_points)   # mm sweep
+            base_val_display = base_val * 1e3
+            sweep = np.linspace(pmin, pmax, n_points)
         else:
             base_val_display = base_val
             sweep = np.linspace(pmin, pmax, n_points)
@@ -364,7 +315,7 @@ def geometry_sensitivity(base_params, losses_flags, n_points=20):
         for val in sweep:
             p = dict(base_params)
             if gap_key:
-                p[key] = float(val) * 1e-3   # mm → m for physics
+                p[key] = float(val) * 1e-3
             else:
                 p[key] = float(val)
             sim = simulate(p, model='schmidt', losses_flags=losses_flags)
@@ -373,14 +324,190 @@ def geometry_sensitivity(base_params, losses_flags, n_points=20):
             delta = sim['losses']['P_brake'] - P_base
             if delta > best_delta:
                 best_delta = delta
-                best_val   = float(val)   # keep in mm for gap display
+                best_val   = float(val)
 
         if best_delta == -float('inf'):
             continue
 
-        pct      = best_delta / P_base * 100 if P_base > 0 else 0
+        pct = best_delta / P_base * 100 if P_base > 0 else 0
         base_for_display = base_val_display if gap_key else base_val
         results.append((key, name, units, base_for_display, best_val, best_delta, pct))
 
     results.sort(key=lambda x: x[5], reverse=True)
+    return results
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# STAGE FUNCTIONS (v10 addition)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+STAGE2_LOCKED = ('D_displacer', 'S_displacer', 'L_displacer')
+# These three parameters represent the existing physical displacer.
+# Prototype 2 must never change them.
+
+STAGE4_OPEN = ('P_mean_bar', 'T_h', 'f')
+# Stage 4 opens operating conditions on fixed Prototype 2 geometry.
+
+
+def _enforce_stage2_locks(open_specs, base_params):
+    """
+    Verify that no locked Stage 2 parameter appears in open_specs.
+    Raises ValueError with a clear message if violated.
+    """
+    open_keys = [s[0] for s in open_specs]
+    for locked in STAGE2_LOCKED:
+        if locked in open_keys:
+            raise ValueError(
+                f"Parameter '{locked}' is locked in Stage 2 (Prototype 2). "
+                f"It represents the existing physical displacer and cannot be optimized. "
+                f"Remove it from open_specs."
+            )
+
+
+def prototype2_search(base_params, open_specs, objective, model_key,
+                      losses_flags, method='coarse_fine',
+                      n_samples=300, progress_cb=None):
+    """
+    Stage 2 — Prototype 2 optimization.
+
+    Locks D_displacer, S_displacer, L_displacer to their base_params values.
+    Optimizes everything else specified in open_specs.
+
+    Parameters
+    ----------
+    base_params : dict  must contain the locked displacer parameters
+    open_specs  : list  of (key, min_val, max_val) — must NOT include locked params
+    objective   : str   'power', 'efficiency', or 'balanced'
+    model_key   : str   'schmidt' or 'adiabatic'
+    losses_flags: dict
+    method      : str   'coarse_fine', 'lhs', or 'bayesian'
+    n_samples   : int   used if method='lhs'
+    progress_cb : callable or None
+
+    Returns
+    -------
+    (best_params, best_losses, all_results)
+    best_params will have STAGE2_LOCKED values identical to base_params.
+    """
+    _enforce_stage2_locks(open_specs, base_params)
+
+    if method == 'lhs':
+        best_params, best_losses, all_results = lhs_search(
+            base_params, open_specs, objective, model_key,
+            losses_flags, n_samples=n_samples, progress_cb=progress_cb)
+    elif method == 'bayesian':
+        best_params, best_losses, all_results = bayesian_search(
+            base_params, open_specs, objective, model_key,
+            losses_flags, n_calls=max(20, n_samples // 5),
+            progress_cb=progress_cb)
+    else:
+        best_params, best_losses, all_results = coarse_fine_search(
+            base_params, open_specs, objective, model_key,
+            losses_flags, progress_cb=progress_cb)
+
+    # Post-check: verify locked parameters are unchanged
+    if best_params is not None:
+        for locked in STAGE2_LOCKED:
+            if locked in base_params:
+                assert abs(best_params.get(locked, 0) - base_params[locked]) < 1e-9, \
+                    f"BUG: {locked} was modified during Prototype 2 optimization"
+
+    return best_params, best_losses, all_results
+
+
+def stage3_search(base_params, open_specs, objective, Q_in_max,
+                  model_key='schmidt', losses_flags=None,
+                  method='lhs', n_samples=400, progress_cb=None):
+    """
+    Stage 3 — Full geometry optimization under fixed operating conditions.
+
+    Gas = Air, P = 1 bar, f = 10 Hz (fixed in base_params before calling).
+    Q_in <= Q_in_max is a hard feasibility requirement for final results.
+
+    Returns
+    -------
+    (best_params, best_losses, all_results_feasible, all_results_raw)
+    """
+    if losses_flags is None:
+        losses_flags = dict(flow=True, regen_imp=True, mechanical=True,
+                            wall_cond=True, leakage=True, shuttle=False)
+
+    p_with_budget = dict(base_params)
+    p_with_budget['Q_in_max'] = Q_in_max
+
+    if method == 'lhs':
+        best_params, best_losses, all_results_raw = lhs_search(
+            p_with_budget, open_specs, objective, model_key,
+            losses_flags, n_samples=n_samples, progress_cb=progress_cb)
+    elif method == 'bayesian':
+        best_params, best_losses, all_results_raw = bayesian_search(
+            p_with_budget, open_specs, objective, model_key,
+            losses_flags, n_calls=max(20, n_samples // 5),
+            progress_cb=progress_cb)
+    else:
+        best_params, best_losses, all_results_raw = coarse_fine_search(
+            p_with_budget, open_specs, objective, model_key,
+            losses_flags, progress_cb=progress_cb)
+
+    all_results_feasible = [
+        (score, p, l) for score, p, l in all_results_raw
+        if l.get('Q_in_W', 9999) <= Q_in_max
+    ]
+    all_results_feasible.sort(key=lambda x: x[0], reverse=True)
+
+    return best_params, best_losses, all_results_feasible, all_results_raw
+
+
+def stage4_search(proto2_params, objective, Q_in_max=1500.0,
+                  P_max=10.0, f_max=25.0, model_key='schmidt',
+                  losses_flags=None, n_samples=200, progress_cb=None):
+    """
+    Stage 4 — Operating conditions optimization on Prototype 2 geometry.
+
+    Geometry fixed to proto2_params. Opens P_mean_bar, T_h, f.
+    Runs separately for Air, Helium, Hydrogen.
+
+    Returns
+    -------
+    dict with keys 'Air', 'Helium', 'Hydrogen'
+    Each value: dict with best_params, best_losses, all_feasible, all_raw.
+    """
+    if losses_flags is None:
+        losses_flags = dict(flow=True, regen_imp=True, mechanical=True,
+                            wall_cond=True, leakage=True, shuttle=False)
+
+    open_specs = [
+        ('P_mean_bar', 1.0, P_max),
+        ('T_h',        573, 1273),
+        ('f',          5.0, f_max),
+    ]
+
+    results = {}
+    gases = ['Air', 'Helium', 'Hydrogen']
+
+    for idx, gas_name in enumerate(gases):
+        if progress_cb:
+            progress_cb(idx / len(gases), f"Optimizing for {gas_name}...")
+
+        p = dict(proto2_params)
+        p['gas']       = gas_name
+        p['Q_in_max']  = Q_in_max
+
+        _, _, all_feasible, all_raw = stage3_search(
+            p, open_specs, objective, Q_in_max,
+            model_key=model_key, losses_flags=losses_flags,
+            method='lhs', n_samples=n_samples,
+            progress_cb=None)
+
+        best = all_feasible[0] if all_feasible else (None, None, None)
+        results[gas_name] = {
+            'best_params':  best[1] if best[0] is not None else None,
+            'best_losses':  best[2] if best[0] is not None else None,
+            'all_feasible': all_feasible,
+            'all_raw':      all_raw,
+        }
+
+    if progress_cb:
+        progress_cb(1.0, "Stage 4 complete.")
+
     return results

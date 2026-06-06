@@ -1,26 +1,13 @@
 """
-app_v9.py — Stirling Engine Simulator v9 (Streamlit UI)
-========================================================
+app_v9_4.py — Stirling Engine Simulator v9.4 (Streamlit UI)
+============================================================
 Tabs: Schmidt | Adiabatic | Both | Optimization
 
-v9 addition — BI-DIRECTIONAL DRIVING MODE:
-  The sidebar now exposes a "Driving Mode" selector with two options:
-
-  1. Fixed T_h  (classic mode):
-       User sets T_h; simulator computes Q_in and Power.
-       Same behaviour as V8.
-
-  2. Fixed Heat Input (new mode):
-       User sets Q_in_target [W]; simulator solves for the T_h that satisfies
-       that heat-budget constraint using Brent root-finding (physics_v9.py →
-       simulate_fixed_heat). The resulting T_h and Power are displayed as
-       primary outputs.
-
-  In Fixed Heat Input mode:
-    - The T_h number_input is hidden (it is a model output, not an input).
-    - A "Net Heat Transferred to Gas (Q_in) [W]" slider appears instead.
-    - The top metric row gains a prominent "Calculated T_h [K]" metric.
-    - All plots and tables update to reflect the solved state.
+v9.4 changes:
+  - Default heat input raised from 500 W → 1000 W (prevents red deficit on load)
+  - Detailed results shown as a clean st.table (not collapsed in expander)
+  - Tab layout reordered: Metrics → Detailed Table → Diagrams → Heat Budget → Animation
+  - No-Regenerator P-V loop overlaid on Schmidt and Both P-V graphs
 """
 
 import math, io, warnings
@@ -32,15 +19,15 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import streamlit as st
 
-from animation_v9_3 import build_engine_animation
-from physics_v9_3 import (
+from animation_v9_4 import build_engine_animation
+from physics_v9_4 import (
     PROTOTYPE, GASES,
     to_si, build_geometry,
     simulate, simulate_fixed_heat,
     validate_mass_conservation, validate_first_law,
     validate_carnot, validate_pressure_scaling,
 )
-from optimization_v9_3 import (
+from optimization_v9_4 import (
     OPTIMIZABLE_PARAMS, geometry_sensitivity,
     coarse_fine_search, lhs_search, bayesian_search,
 )
@@ -53,7 +40,7 @@ def _freeze_dict(d):
 warnings.filterwarnings("ignore", category=UserWarning)
 
 st.set_page_config(
-    page_title="Stirling Engine Simulator v9.3",
+    page_title="Stirling Engine Simulator v9.4",
     layout="wide",
     initial_sidebar_state="expanded",
 )
@@ -61,9 +48,8 @@ st.set_page_config(
 if 'initialized' not in st.session_state:
     for k, v in PROTOTYPE.items():
         st.session_state[k] = v
-    # Sidebar shuttle inputs stored in mm for readability
-    st.session_state['gap_mm']                    = PROTOTYPE['gap'] * 1e3          # 0.25 mm
-    st.session_state['L_displacer_effective_mm']  = PROTOTYPE['L_displacer_effective'] * 1e3  # 189 mm
+    st.session_state['gap_mm']                    = PROTOTYPE['gap'] * 1e3
+    st.session_state['L_displacer_effective_mm']  = PROTOTYPE['L_displacer_effective'] * 1e3
     st.session_state.initialized = True
 
 def reset_to_prototype():
@@ -74,7 +60,7 @@ def reset_to_prototype():
 
 col_title, col_reset = st.columns([4, 1])
 with col_title:
-    st.title("🔥 Stirling Engine Simulator v9.3")
+    st.title("🔥 Stirling Engine Simulator v9.4")
     st.caption("Gamma-type engine — Schmidt · Adiabatic · Comparison · Optimization · Bi-directional Mode")
 with col_reset:
     st.write(""); st.write("")
@@ -125,10 +111,10 @@ with st.sidebar:
 
     if driving_mode == "Fixed Hot Temperature (T_h)":
         st.number_input("Hot temperature T_h [K]", 400, 1500, step=10, key='T_h')
-        st.slider("Max heat input budget [W]", 50, 3000, value=500, step=10, key='Q_in_max',
+        st.slider("Max heat input budget [W]", 50, 3000, value=1000, step=10, key='Q_in_max',
             help="Heat constraint. If required heat exceeds this, available power is scaled down.")
     else:
-        st.slider("Net Heat Transferred to Gas (Q_in) [W]", 50, 3000, value=500, step=10, key='Q_in_max',
+        st.slider("Net Heat Transferred to Gas (Q_in) [W]", 50, 3000, value=1000, step=10, key='Q_in_max',
             help="Assumes ideal reservoir immersion. The engine will calculate the resulting T_h.")
 
     st.number_input("Cold temperature T_k [K]", 250, 400, step=5, key='T_k')
@@ -174,19 +160,16 @@ with st.sidebar:
         help="Length of the shuttle heat-loss zone — typically the hexagonal rod section "
              "bounded by graphite seals on the prototype (default 189 mm).")
 
-    # Heat budget is now part of Operating Conditions — no separate subheader needed.
-
 
 # ── Build shared params ───────────────────────────────────────────────────────
 params = {k: st.session_state[k] for k in PROTOTYPE if k in st.session_state}
 if 'T_h' not in params:
-    params['T_h'] = PROTOTYPE['T_h']  # Fallback to prevent crash when hidden
+    params['T_h'] = PROTOTYPE['T_h']
 for k in ('V_loop_cold', 'V_loop_hot', 'V_cle', 'V_clc',
           'L_displacer', 'P_ref', 'k_metal', 't_wall',
           'D_displacer_effective'):
     params[k] = PROTOTYPE[k]
 
-# Convert sidebar mm inputs back to metres for gap and L_displacer_effective
 params['gap']                   = st.session_state.get('gap_mm',
                                     PROTOTYPE['gap'] * 1e3) * 1e-3
 params['L_displacer_effective'] = st.session_state.get('L_displacer_effective_mm',
@@ -198,14 +181,11 @@ losses_flags = dict(flow=flow_loss, regen_imp=regen_imp, mechanical=mech_loss,
 # ── Driving-mode state ────────────────────────────────────────────────────────
 fixed_Qin_mode = (st.session_state.get('driving_mode', 'Fixed Hot Temperature (T_h)')
                   == "Fixed Heat Input (Q_in)")
-# Q_in_max is now the unified variable: budget in Fixed T_h mode,
-# or target in Fixed Q_in mode — both come from the same session_state key.
-Q_in_max = st.session_state.get('Q_in_max', 500)
+Q_in_max = st.session_state.get('Q_in_max', 1000)
 
 # ── Run simulations ───────────────────────────────────────────────────────────
 with st.spinner("Computing..."):
     if fixed_Qin_mode:
-        # Inverse mode: solve for T_h that produces exactly Q_in_max watts
         sim_s = simulate_fixed_heat(params, Q_in_max,
                                     model='schmidt', losses_flags=losses_flags)
         params_noreg = dict(params); params_noreg['L_r'] = 0.001
@@ -214,7 +194,6 @@ with st.spinner("Computing..."):
         sim_a        = simulate_fixed_heat(params, Q_in_max,
                                            model='adiabatic', losses_flags=losses_flags)
     else:
-        # Classic mode: T_h is given, Q_in is an output
         sim_s = simulate(params, model='schmidt', losses_flags=losses_flags)
         params_noreg = dict(params); params_noreg['L_r'] = 0.001
         sim_s_noreg  = simulate(params_noreg, model='schmidt', losses_flags=losses_flags)
@@ -225,7 +204,7 @@ with st.spinner("Computing..."):
 def _dead_vol(sim):
     """Return total dead volume V_k + V_r + V_h [cm³] for true P-V plot."""
     g = sim['geom']
-    return (g.get('V_k', 0) + g.get('V_r', 0) + g.get('V_h', 0)) * 1e6  # cm³
+    return (g.get('V_k', 0) + g.get('V_r', 0) + g.get('V_h', 0)) * 1e6
 
 
 # ── Heat budget helper ────────────────────────────────────────────────────────
@@ -233,10 +212,9 @@ def show_heat_budget(losses, Q_in_max, fixed_Qin_mode=False):
     Q_req    = losses['Q_in_W']
     P_brake  = losses['P_brake']
     margin   = Q_in_max - Q_req
-    feasible = margin >= -0.1   # allow tiny floating-point slack
+    feasible = margin >= -0.1
 
     if fixed_Qin_mode:
-        # In Fixed Q_in mode the solver matched Q_in exactly — no deficit possible.
         st.success(f"✅ Heat target matched perfectly. Engine consumes {Q_req:.1f} W.")
         P_available = P_brake
     else:
@@ -305,7 +283,7 @@ def build_excel(sim_list, params, losses_flags, Q_in_max, include_charts=True):
         if sheet_idx == 0:
             ws1.title = ws_name
 
-        _hdr(ws1, 1, 1, f"Stirling Engine Simulator v7 — {model_label}")
+        _hdr(ws1, 1, 1, f"Stirling Engine Simulator v9.4 — {model_label}")
         ws1.merge_cells('A1:C1')
         _row(ws1, 2, "Timestamp", ts)
         _row(ws1, 3, "Model", model_label)
@@ -468,7 +446,7 @@ with tab_schmidt:
     else:
         L = sim['losses']
 
-        # ── Mode banner ───────────────────────────────────────────────────────
+        # ── 1. Mode banner ────────────────────────────────────────────────────
         if fixed_Qin_mode:
             T_h_solved = sim.get('T_h_solved', sim['gas']['T_h'])
             st.success(
@@ -477,7 +455,7 @@ with tab_schmidt:
                 f"(converged in {sim.get('solver_iters', '?')} iterations)"
             )
 
-        # ── Metrics ───────────────────────────────────────────────────────────
+        # ── 2. Top Metrics ────────────────────────────────────────────────────
         c0, c1, c2, c3, c4 = st.columns(5)
         c0.metric("W_cycle [J]", f"{L['W_cycle']:.4f}")
         c1.metric("W_shaft [J]", f"{L['W_shaft']:.4f}")
@@ -488,29 +466,40 @@ with tab_schmidt:
         if fixed_Qin_mode and 'T_e_max' in L:
             c4.metric("🔥 Calculated T_h [K]", f"{sim['gas']['T_h']:.1f}")
 
-        with st.expander("Detailed results", expanded=False):
-            st.code(
-                f"M (gas mass)  : {L['M']*1000:.4f} g\n"
-                f"P_mean        : {L['P_mean']/1e5:.3f} bar\n"
-                f"P_max/min     : {L['P_max']/1e5:.2f} / {L['P_min']/1e5:.2f} bar\n"
-                f"W_cycle       : {L['W_cycle']:.4f} J\n"
-                f"W_shaft       : {L['W_shaft']:.4f} J\n"
-                f"Brake Power   : {L['P_brake']:.2f} W\n"
-                f"Q_in [UB]     : {L['Q_in_W']:.2f} W  (estimated upper-bound)\n"
-                f"Q_miss [UB]   : {L['Q_miss']*params['f']:.2f} W  (estimated upper-bound)\n"
-                f"Q_shuttle     : {L.get('Q_shuttle_W', 0):.2f} W\n"
-                f"Efficiency    : {L['eta_brake']*100:.3f} %\n"
-                f"% Carnot      : {L['frac_carnot']*100:.2f} %",
-                language='text'
-            )
+        # ── 3. Detailed Results Table ─────────────────────────────────────────
+        st.subheader("📋 Detailed Results")
+        st.table({
+            "Parameter": [
+                "Mass (gas mass)",
+                "Mean Pressure",
+                "W_cycle",
+                "W_shaft",
+                "Brake Power",
+                "Q_in [Upper-Bound]",
+                "Q_miss [Upper-Bound]",
+                "Q_shuttle",
+                "Efficiency",
+                "% Carnot",
+            ],
+            "Value": [
+                f"{L['M']*1000:.4f} g",
+                f"{L['P_mean']/1e5:.3f} bar",
+                f"{L['W_cycle']:.4f} J",
+                f"{L['W_shaft']:.4f} J",
+                f"{L['P_brake']:.2f} W",
+                f"{L['Q_in_W']:.2f} W (est. upper-bound)",
+                f"{L['Q_miss']*params['f']:.2f} W (est. upper-bound)",
+                f"{L.get('Q_shuttle_W', 0):.2f} W",
+                f"{L['eta_brake']*100:.3f} %",
+                f"{L['frac_carnot']*100:.2f} %",
+            ],
+        })
 
-        st.subheader("🔥 Heat Input Budget — Estimated Upper-Bound (Schmidt)")
-        show_heat_budget(L, Q_in_max, fixed_Qin_mode=fixed_Qin_mode)
-
+        # ── 4. Diagrams ───────────────────────────────────────────────────────
         st.subheader("📈 Diagrams")
         R    = sim['result']
         dv   = _dead_vol(sim)
-        V_tot = (R['V_e'] + R['V_c']) * 1e6 + dv   # absolute volume [cm³]
+        V_tot = (R['V_e'] + R['V_c']) * 1e6 + dv
         th_deg = np.rad2deg(R['theta'])
 
         fig, axes = plt.subplots(1, 3, figsize=(15, 5))
@@ -518,8 +507,15 @@ with tab_schmidt:
 
         ax = axes[0]
         ax.set_facecolor('white')
-        ax.plot(V_tot, R['P'] / 1e5, '#1565C0', lw=2)
+        ax.plot(V_tot, R['P'] / 1e5, '#1565C0', lw=2, label='Schmidt')
         ax.fill(V_tot, R['P'] / 1e5, alpha=0.12, color='#1565C0')
+        # No-Regen overlay
+        if sim_s_noreg is not None:
+            R_nr = sim_s_noreg['result']
+            dv_nr = _dead_vol(sim_s_noreg)
+            V_tot_nr = (R_nr['V_e'] + R_nr['V_c']) * 1e6 + dv_nr
+            ax.plot(V_tot_nr, R_nr['P'] / 1e5, color='#FFA726', lw=2, ls='--', label='No Regen')
+            ax.legend(fontsize=8)
         ax.set(xlabel='V_total — absolute [cm³]', ylabel='P [bar]', title='P-V Diagram')
         ax.grid(alpha=0.3)
 
@@ -531,9 +527,6 @@ with tab_schmidt:
 
         ax = axes[2]
         ax.set_facecolor('white')
-        # v8 FIX: use Q_e (expansion work [J/cycle] × f) for the first bar.
-        # Using Q_in_W caused double-counting because Q_in_W already includes
-        # Q_miss, Q_cond, and Q_shuttle — it is the sum, not just Q_e.
         Q_e_val       = abs(L.get('Q_e', 0) * params['f'])
         Q_miss_val    = abs(L.get('Q_miss', 0) * params['f'])
         Q_cond_val    = abs(L.get('Q_cond_W', 0))
@@ -549,7 +542,49 @@ with tab_schmidt:
         plt.tight_layout()
         st.pyplot(fig); plt.close(fig)
 
-        # ── Power vs Mean Pressure sensitivity ───────────────────────────────
+        # ── 5. Heat Input Budget ──────────────────────────────────────────────
+        st.subheader("🔥 Heat Input Budget — Estimated Upper-Bound (Schmidt)")
+        show_heat_budget(L, Q_in_max, fixed_Qin_mode=fixed_Qin_mode)
+
+        # ── 6. Engine Animation ───────────────────────────────────────────────
+        st.subheader("🎬 Engine Animation")
+        if st.button("Generate Animation"):
+            with st.spinner("Rendering animation..."):
+                try:
+                    geom_frozen   = _freeze_dict(build_geometry(to_si(params)))
+                    params_frozen = _freeze_dict(params)
+                    gif_b64 = build_engine_animation(geom_frozen, params_frozen)
+                    st.markdown(
+                        f'<img src="data:image/gif;base64,{gif_b64}" '
+                        f'style="width:100%;max-width:780px;border-radius:8px;" />',
+                        unsafe_allow_html=True,
+                    )
+                except Exception as e:
+                    st.warning(f"Animation error: {e}")
+
+        # ── 7. Top-3 Geometric Improvements ──────────────────────────────────
+        st.subheader("🔧 Top-3 Geometric Improvements (Global Sweep)")
+        st.caption("Full-range sweep per geometric parameter — operating conditions held fixed.")
+        with st.spinner("Running global sensitivity analysis..."):
+            sens = geometry_sensitivity(params, losses_flags)
+        if sens:
+            for rank, (key, name, units, base_val, best_val, delta_W, pct) in enumerate(sens[:3], 1):
+                direction = "↑ Increase" if best_val > base_val else "↓ Decrease"
+                arrow = "🟢" if delta_W > 0 else "🔴"
+                with st.expander(
+                    f"#{rank}  {name}  —  {arrow} {delta_W:+.2f} W  ({pct:+.1f}%)",
+                    expanded=(rank == 1)
+                ):
+                    st.markdown(
+                        f"**{direction} {name}** from **{base_val:.2f} {units}** "
+                        f"to **{best_val:.2f} {units}**\n\n"
+                        f"Estimated brake power change: **{delta_W:+.2f} W** ({pct:+.1f}%)\n\n"
+                        f"*Based on full-range sweep (Schmidt model, all other params fixed).*"
+                    )
+        else:
+            st.info("Could not compute sensitivity — check parameters.")
+
+        # ── 8. Power vs Mean Pressure sensitivity ─────────────────────────────
         st.subheader("📉 Power vs Mean Pressure (All Gases)")
         st.caption("Quick parametric sweep — all other parameters held constant at current values.")
         with st.spinner("Running pressure sweep..."):
@@ -576,48 +611,10 @@ with tab_schmidt:
             plt.tight_layout()
             st.pyplot(fig_ps); plt.close(fig_ps)
 
-        st.subheader("🎬 Engine Animation")
-        if st.button("Generate Animation"):
-            with st.spinner("Rendering animation..."):
-                try:
-                    # Freeze the dictionaries so they can be hashed by st.cache_data
-                    geom_frozen = _freeze_dict(build_geometry(to_si(params)))
-                    params_frozen = _freeze_dict(params)
-
-                    gif_b64 = build_engine_animation(geom_frozen, params_frozen)
-                    st.markdown(
-                        f'<img src="data:image/gif;base64,{gif_b64}" '
-                        f'style="width:100%;max-width:780px;border-radius:8px;" />',
-                        unsafe_allow_html=True,
-                    )
-                except Exception as e:
-                    st.warning(f"Animation error: {e}")
-
-        st.subheader("🔧 Top-3 Geometric Improvements (Global Sweep)")
-        st.caption("Full-range sweep per geometric parameter — operating conditions held fixed.")
-        with st.spinner("Running global sensitivity analysis..."):
-            sens = geometry_sensitivity(params, losses_flags)
-        if sens:
-            for rank, (key, name, units, base_val, best_val, delta_W, pct) in enumerate(sens[:3], 1):
-                direction = "↑ Increase" if best_val > base_val else "↓ Decrease"
-                arrow = "🟢" if delta_W > 0 else "🔴"
-                with st.expander(
-                    f"#{rank}  {name}  —  {arrow} {delta_W:+.2f} W  ({pct:+.1f}%)",
-                    expanded=(rank == 1)
-                ):
-                    st.markdown(
-                        f"**{direction} {name}** from **{base_val:.2f} {units}** "
-                        f"to **{best_val:.2f} {units}**\n\n"
-                        f"Estimated brake power change: **{delta_W:+.2f} W** ({pct:+.1f}%)\n\n"
-                        f"*Based on full-range sweep (Schmidt model, all other params fixed).*"
-                    )
-        else:
-            st.info("Could not compute sensitivity — check parameters.")
-
         if st.button("📥 Export to Excel (Schmidt)"):
             try:
                 buf = build_excel([(sim, "Schmidt")], params, losses_flags, Q_in_max)
-                fname = f"stirling_v7_schmidt_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+                fname = f"stirling_v9_4_schmidt_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
                 st.download_button("⬇️ Download Excel (Schmidt)", data=buf.getvalue(),
                     file_name=fname,
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
@@ -644,7 +641,7 @@ with tab_adiabatic:
         La = sim_a['losses']
         Ls = sim_s['losses'] if sim_s else None
 
-        # ── Mode banner ───────────────────────────────────────────────────────
+        # ── 1. Mode banner ────────────────────────────────────────────────────
         if fixed_Qin_mode:
             T_h_solved_a = sim_a.get('T_h_solved', sim_a['gas']['T_h'])
             st.success(
@@ -653,7 +650,7 @@ with tab_adiabatic:
                 f"(converged in {sim_a.get('solver_iters', '?')} iterations)"
             )
 
-        # ── Metrics ───────────────────────────────────────────────────────────
+        # ── 2. Top Metrics ────────────────────────────────────────────────────
         c0, c1, c2, c3, c4 = st.columns(5)
         c0.metric("W_cycle [J]", f"{La['W_cycle']:.4f}")
         c1.metric("W_shaft [J]", f"{La['W_shaft']:.4f}")
@@ -663,6 +660,35 @@ with tab_adiabatic:
         fixed_Qin_mode = (st.session_state.get('driving_mode') == "Fixed Heat Input (Q_in)")
         if fixed_Qin_mode and 'T_e_max' in La:
             c4.metric("🔥 Calculated T_h [K]", f"{sim_a['gas']['T_h']:.1f}")
+
+        # ── 3. Detailed Results Table ─────────────────────────────────────────
+        st.subheader("📋 Detailed Results")
+        st.table({
+            "Parameter": [
+                "Mass (gas mass)",
+                "Mean Pressure",
+                "W_cycle",
+                "W_shaft",
+                "Brake Power",
+                "Q_in [Upper-Bound]",
+                "Q_miss [Upper-Bound]",
+                "Q_shuttle",
+                "Efficiency",
+                "% Carnot",
+            ],
+            "Value": [
+                f"{La['M']*1000:.4f} g",
+                f"{La['P_mean']/1e5:.3f} bar",
+                f"{La['W_cycle']:.4f} J",
+                f"{La['W_shaft']:.4f} J",
+                f"{La['P_brake']:.2f} W",
+                f"{La['Q_in_W']:.2f} W (est. upper-bound)",
+                f"{La['Q_miss']*params['f']:.2f} W (est. upper-bound)",
+                f"{La.get('Q_shuttle_W', 0):.2f} W",
+                f"{La['eta_brake']*100:.3f} %",
+                f"{La['frac_carnot']*100:.2f} %",
+            ],
+        })
 
         if Ls:
             M_g     = Ls['M'] * 1000
@@ -674,7 +700,6 @@ with tab_adiabatic:
                 f"T_h/T_k = {t_ratio:.2f}."
             )
             if La['W_cycle'] > Ls['W_cycle']:
-                # v8: neutral warning instead of confident physical explanation
                 st.warning(
                     base_msg + f"\n\n"
                     f"⚠️ **W_adiabatic ({La['W_cycle']:.3f} J) > W_schmidt ({Ls['W_cycle']:.3f} J).** "
@@ -689,9 +714,7 @@ with tab_adiabatic:
                     f"W_schmidt ({Ls['W_cycle']:.3f} J) ≥ W_adiabatic ({La['W_cycle']:.3f} J)."
                 )
 
-        st.subheader("🔥 Heat Input Budget — Estimated Upper-Bound (Adiabatic)")
-        show_heat_budget(La, Q_in_max, fixed_Qin_mode=fixed_Qin_mode)
-
+        # ── 4. Diagrams ───────────────────────────────────────────────────────
         st.subheader("📈 Diagrams")
         Ra    = sim_a['result']
         dv_a  = _dead_vol(sim_a)
@@ -725,6 +748,13 @@ with tab_adiabatic:
 
         plt.tight_layout()
         st.pyplot(fig); plt.close(fig)
+
+        # ── 5. Heat Input Budget ──────────────────────────────────────────────
+        st.subheader("🔥 Heat Input Budget — Estimated Upper-Bound (Adiabatic)")
+        show_heat_budget(La, Q_in_max, fixed_Qin_mode=fixed_Qin_mode)
+
+        # ── 6. Engine Animation ───────────────────────────────────────────────
+        st.subheader("🎬 Engine Animation")
 
         with st.expander("🔍 Validation checks (click to expand)", expanded=False):
             delta, ok = validate_mass_conservation(sim_a['result'], sim_a['geom'], sim_a['gas'])
@@ -763,7 +793,7 @@ with tab_adiabatic:
         if st.button("📥 Export to Excel (Adiabatic)"):
             try:
                 buf   = build_excel([(sim_a, "Adiabatic")], params, losses_flags, Q_in_max)
-                fname = f"stirling_v7_adiabatic_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+                fname = f"stirling_v9_4_adiabatic_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
                 st.download_button("⬇️ Download Excel (Adiabatic)", data=buf.getvalue(),
                     file_name=fname,
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
@@ -848,13 +878,18 @@ with tab_both:
         fig_both, axes_both = plt.subplots(1, 2, figsize=(14, 5))
         fig_both.patch.set_facecolor('white')
 
-        # P-V overlay
+        # P-V overlay — Schmidt + Adiabatic + No-Regen
         ax = axes_both[0]
         ax.set_facecolor('white')
         ax.plot(V_s, Rs['P'] / 1e5, '#1565C0', lw=2, label='Schmidt')
         ax.fill(V_s, Rs['P'] / 1e5, alpha=0.08, color='#1565C0')
         ax.plot(V_a, Ra['P'] / 1e5, '#C62828', lw=2, ls='--', label='Adiabatic')
         ax.fill(V_a, Ra['P'] / 1e5, alpha=0.08, color='#C62828')
+        if sim_s_noreg is not None:
+            R_nr = sim_s_noreg['result']
+            dv_nr = _dead_vol(sim_s_noreg)
+            V_tot_nr = (R_nr['V_e'] + R_nr['V_c']) * 1e6 + dv_nr
+            ax.plot(V_tot_nr, R_nr['P'] / 1e5, color='#FFA726', lw=2, ls='--', label='No Regen')
         ax.set(xlabel='V_total — absolute [cm³]', ylabel='P [bar]',
                title='P-V Diagram — Overlay')
         ax.legend(fontsize=9); ax.grid(alpha=0.3)
@@ -891,7 +926,7 @@ with tab_both:
                     [(sim_s_display, "Schmidt"), (sim_a, "Adiabatic")],
                     params, losses_flags, Q_in_max
                 )
-                fname = f"stirling_v7_both_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+                fname = f"stirling_v9_4_both_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
                 st.download_button("⬇️ Download Excel (Both Models)", data=buf.getvalue(),
                     file_name=fname,
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
@@ -972,8 +1007,6 @@ with tab_optimize:
 
     if st.button("🚀 Run Optimization", type="primary", disabled=(len(open_specs) == 0)):
         base_params = dict(params)
-        # In Fixed Q_in mode, seed the optimizer with the already-solved T_h
-        # so it starts from a physically meaningful hot temperature.
         if fixed_Qin_mode and sim_s is not None:
             base_params['T_h'] = sim_s.get('T_h_solved', sim_s['gas']['T_h'])
         opt_flags   = dict(flow=True, regen_imp=True, mechanical=True,
@@ -1044,4 +1077,4 @@ with tab_optimize:
                 base_params=base_params, strategy=strategy, objective=obj_choice
             )
 
-st.caption("💡 Stirling Engine Simulator v9.3 — physics_v9_3.py · optimization_v9_3.py · app_v9_3.py · animation_v9_3.py")
+st.caption("💡 Stirling Engine Simulator v9.4 — physics_v9_4.py · optimization_v9_4.py · app_v9_4.py · animation_v9_4.py")
