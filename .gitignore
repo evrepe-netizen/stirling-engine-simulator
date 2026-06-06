@@ -1,1 +1,6 @@
 deploy_v10/
+__pycache__/
+*.pyc
+.DS_Store
+backups/
+stable_v10_*/
