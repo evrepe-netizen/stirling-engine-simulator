@@ -425,6 +425,15 @@ with st.sidebar:
     st.number_input("Regen length [mm]",   20.0, 500.0, step=5.0, key='L_r')
     st.number_input("Wire diameter [mm]",  0.05, 5.0,   step=0.05, key='d_wire')
     st.slider("Porosity", 0.5, 0.99, step=0.01, key='porosity')
+    st.slider(
+        "h_reg effective [W/m²K]",
+        50.0, 600.0, value=300.0, step=25.0, key='h_reg',
+        help="Effective gas-to-regenerator-matrix heat transfer coefficient used in the NTU model."
+    )
+    st.caption(
+        "Regenerator effectiveness is calculated from geometry using the NTU model. "
+        "The material-quality cap is fixed internally at ε_reg,max = 0.85."
+    )
 
     st.subheader("Operating Conditions")
     st.selectbox("Working gas", ["Air", "Helium", "Hydrogen"], key='gas')
@@ -467,16 +476,6 @@ with st.sidebar:
     wall_cond    = st.checkbox("Wall conduction",         True)
     leak_loss    = st.checkbox("Seal leakage",            True)
     shuttle_loss = st.checkbox("Shuttle heat loss",       True)
-    st.slider(
-        "ε_reg max / material-quality cap",
-        0.5, 0.99, step=0.01, key='eps_reg',
-        help="Upper cap only. Actual regenerator effectiveness is now calculated from geometry using an NTU model."
-    )
-    st.slider(
-        "h_reg effective [W/m²K]",
-        50.0, 600.0, value=300.0, step=25.0, key='h_reg',
-        help="Effective gas-to-regenerator-matrix heat transfer coefficient used in the NTU model."
-    )
     st.slider("η_mech", 0.5, 0.99, step=0.01, key='eta_mech')
     st.slider("C_leak", 0.0, 0.20, step=0.01, key='C_leak')
 
@@ -488,6 +487,11 @@ with st.sidebar:
 
 # ── Build shared params ───────────────────────────────────────────────────────
 params = {k: st.session_state[k] for k in PROTOTYPE if k in st.session_state}
+
+# Regenerator material-quality cap is fixed.
+# Effective regenerator performance is calculated from geometry using NTU.
+params['eps_reg'] = 0.85
+st.session_state['eps_reg'] = 0.85
 if 'T_h' not in params:
     params['T_h'] = PROTOTYPE['T_h']
 for k in ('V_loop_cold', 'V_loop_hot', 'V_cle', 'V_clc',
@@ -521,6 +525,23 @@ with st.spinner("Computing..."):
         params_noreg = dict(params); params_noreg['L_r'] = 0.001
         sim_s_noreg  = simulate(params_noreg, model='schmidt', losses_flags=losses_flags)
         sim_a        = simulate(params, model='adiabatic', losses_flags=losses_flags)
+
+# ── Sidebar: calculated regenerator quality from NTU model ───────────────────
+with st.sidebar:
+    st.subheader("Regenerator calculated quality")
+    if sim_s is not None:
+        L_reg_calc = sim_s.get("losses", {})
+        st.metric("ε_reg effective", f"{L_reg_calc.get('eps_reg_effective', 0):.3f}")
+        st.metric("NTU_reg", f"{L_reg_calc.get('NTU_reg', 0):.2f}")
+        st.metric("A_surface_reg [m²]", f"{L_reg_calc.get('A_surface_reg', 0):.4f}")
+        st.metric("UA_reg [W/K]", f"{L_reg_calc.get('UA_reg', 0):.2f}")
+        st.caption(
+            "These values are calculated from the current regenerator geometry and h_reg. "
+            "The fixed material-quality cap is ε_reg,max = 0.85."
+        )
+    else:
+        st.caption("Regenerator quality will be shown after the simulation runs.")
+
 
 # Store baseline (Prototype 1) for optimization stage comparisons
 if sim_s is not None and 'baseline' not in st.session_state:
