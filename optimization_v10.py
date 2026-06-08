@@ -639,7 +639,6 @@ def stage4_search(proto2_params, objective, Q_in_max=1500.0,
     open_specs = [
         ('P_mean_bar', 1.0, P_max),
         ('T_h',        573, 1273),
-        ('f',          5.0, f_max),
     ]
 
     results = {}
@@ -651,6 +650,7 @@ def stage4_search(proto2_params, objective, Q_in_max=1500.0,
 
         p = dict(proto2_params)
         p['gas']       = gas_name
+        p['f']         = 10.0
         p['Q_in_max']  = Q_in_max
 
         _, _, all_feasible, all_raw = stage3_search(
@@ -869,7 +869,6 @@ def stage4_search_named(proto2_params, Q_in_max=1500.0,
     open_specs = [
         ('P_mean_bar', 1.0, P_max),
         ('T_h',        573, 1273),
-        ('f',          5.0, f_max),
     ]
 
     gases = ['Air', 'Helium', 'Hydrogen']
@@ -881,10 +880,11 @@ def stage4_search_named(proto2_params, Q_in_max=1500.0,
 
         p = dict(proto2_params)
         p['gas'] = gas_name
+        p['f'] = 10.0
         p['Q_in_max'] = Q_in_max
 
         bp, bl, feasible, raw = stage3_search(
-            p, open_specs, 'balanced', Q_in_max,
+            p, open_specs, 'power', Q_in_max,
             model_key=model_key,
             losses_flags=losses_flags,
             method='lhs',

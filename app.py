@@ -749,7 +749,7 @@ def export_full_results_excel(params, Q_in_max):
     ws.append(["Stirling Engine Simulator V10 — Full Export"])
     ws.append(["Purpose", "Export current app state: inputs, optimizations, losses, NTU regenerator metrics, and Schmidt vs Adiabatic comparison"])
     ws.append(["Methodology", "Schmidt is used for fast candidate generation. The top Schmidt candidates are reranked using the adiabatic model, and the final selected designs are based on this second-order ranking."])
-    ws.append(["Stage 3 note", "For some gases, Max Power, Max Efficiency, and Balanced may select the same operating point. This means one candidate dominated all objectives under the selected heat-budget constraint, not necessarily a calculation error."])
+    ws.append(["Stage 3 note", "Stage 3 reports the Max Power operating point under the selected heat-budget constraint."])
     ws.append(["Alpha constraint", "Geometry optimization applies alpha = V_swc / V_swe <= alpha_max to prevent unrealistic Gamma-engine volume ratios under the Schmidt first-order model."])
     autofit(ws)
 
@@ -904,10 +904,9 @@ def export_full_results_excel(params, Q_in_max):
     return bio.getvalue()
 
 # ── Tabs ──────────────────────────────────────────────────────────────────────
-tab_schmidt, tab_adiabatic, tab_both, tab_animation, tab_optimize = st.tabs([
+tab_schmidt, tab_both, tab_animation, tab_optimize = st.tabs([
     "📊 Schmidt (Isothermal)",
-    "🔁 Adiabatic (RK45)",
-    "⚖️ Both Models",
+    "⚖️ Schmidt vs Adiabatic Comparison",
     "🎬 Animation",
     "🎯 Optimization",
 ])
@@ -1066,28 +1065,8 @@ with tab_schmidt:
                 except Exception as e:
                     st.warning(f"Animation error: {e}")
 
-        # 8. Top-3 Geometric Improvements
-        st.subheader("🔧 Top-3 Geometric Improvements (Global Sweep)")
-        st.caption("Full-range sweep per geometric parameter — operating conditions fixed.")
-        with st.spinner("Running global sensitivity analysis..."):
-            sens = geometry_sensitivity(params, losses_flags)
-        if sens:
-            for rank, (key, name, units, base_val, best_val, delta_W, pct) in \
-                    enumerate(sens[:3], 1):
-                direction = "↑ Increase" if best_val > base_val else "↓ Decrease"
-                arrow = "🟢" if delta_W > 0 else "🔴"
-                with st.expander(
-                    f"#{rank}  {name}  —  {arrow} {delta_W:+.2f} W  ({pct:+.1f}%)",
-                    expanded=(rank == 1)
-                ):
-                    st.markdown(
-                        f"**{direction} {name}** from **{base_val:.2f} {units}** "
-                        f"to **{best_val:.2f} {units}**\n\n"
-                        f"Estimated brake power change: **{delta_W:+.2f} W** ({pct:+.1f}%)\n\n"
-                        f"*Full-range sweep (Schmidt model, all other params fixed).*"
-                    )
-        else:
-            st.info("Could not compute sensitivity — check parameters.")
+        # 8. Geometric improvement recommendations removed from main UI.
+        # Geometry exploration is handled in the optimization stages.
 
         # 9. Power vs Mean Pressure sweep
         st.subheader("📉 Power vs Mean Pressure (All Gases)")
@@ -1130,144 +1109,12 @@ with tab_schmidt:
 # ════════════════════════════════════════════════════════════════════════════
 # TAB 2 — ADIABATIC
 # ════════════════════════════════════════════════════════════════════════════
-with tab_adiabatic:
-    st.header("🔁 Adiabatic (RK45) Model")
-
-    if sim_a is None:
-        st.error("❌ Adiabatic simulation failed — check parameters.")
-    else:
-        La = sim_a['losses']
-        Ls = sim_s['losses'] if sim_s else None
-        _fqm_a = (st.session_state.get('driving_mode') == "Fixed Heat Input (Q_in)")
-
-        # 1. Mode banner
-        if _fqm_a:
-            T_h_solved_a = sim_a.get('T_h_solved', sim_a['gas']['T_h'])
-            st.success(
-                f"✅ **Fixed Heat Input mode** — Q_in target = **{Q_in_max} W**  →  "
-                f"Solved T_h = **{T_h_solved_a:.1f} K** "
-                f"(converged in {sim_a.get('solver_iters', '?')} iterations)"
-            )
-
-        # 2. Top Metrics
-        c0, c1, c2, c3, c4 = st.columns(5)
-        c0.metric("W_cycle [J]",    f"{La['W_cycle']:.4f}")
-        c1.metric("W_shaft [J]",    f"{La['W_shaft']:.4f}")
-        c2.metric("Brake Power [W]",f"{La['P_brake']:.2f}")
-        c3.metric("η_brake [%]",    f"{La['eta_brake']*100:.2f}")
-        if _fqm_a and 'T_e_max' in La:
-            c4.metric("🔥 Calculated T_h [K]", f"{sim_a['gas']['T_h']:.1f}")
-
-        # 3. Detailed Results Table
-        st.subheader("📋 Detailed Results")
-        st.table({
-            "Parameter": [
-                "Mass (gas mass)", "Mean Pressure",
-                "W_cycle", "W_shaft", "Brake Power",
-                "Q_in [Upper-Bound]", "Q_miss [Upper-Bound]",
-                "Q_shuttle", "Efficiency", "% Carnot",
-            ],
-            "Value": [
-                f"{La['M']*1000:.4f} g",
-                f"{La['P_mean']/1e5:.3f} bar",
-                f"{La['W_cycle']:.4f} J",
-                f"{La['W_shaft']:.4f} J",
-                f"{La['P_brake']:.2f} W",
-                f"{La['Q_in_W']:.2f} W (est. upper-bound)",
-                f"{La['Q_miss']*params['f']:.2f} W (est. upper-bound)",
-                f"{La.get('Q_shuttle_W', 0):.2f} W",
-                f"{La['eta_brake']*100:.3f} %",
-                f"{La['frac_carnot']*100:.2f} %",
-            ],
-        })
-
-        if Ls:
-            t_ratio  = params['T_h'] / params['T_k']
-            base_msg = (
-                f"⚖️ M = {Ls['M']*1000:.4f} g (Schmidt). "
-                f"Adiabatic P_mean = {La['P_mean']/1e5:.3f} bar (output). "
-                f"T_h/T_k = {t_ratio:.2f}."
-            )
-            if La['W_cycle'] > Ls['W_cycle']:
-                st.warning(base_msg + f" ⚠️ W_adiabatic > W_schmidt — validate results.")
-            else:
-                st.info(base_msg)
-
-        # 4. Diagrams
-        st.subheader("📈 Diagrams")
-        if sim_a is not None:
-            Ra    = sim_a['result']
-            dv_a  = _dead_vol(sim_a)
-            Va    = (Ra['V_e'] + Ra['V_c']) * 1e6 + dv_a
-            th_a  = np.rad2deg(Ra['theta'])
-
-            fig, axes = plt.subplots(1, 3, figsize=(16, 5))
-            fig.patch.set_facecolor('white')
-
-            axes[0].set_facecolor('white')
-            axes[0].plot(Va, Ra['P'] / 1e5, '#C62828', lw=2)
-            axes[0].fill(Va, Ra['P'] / 1e5, alpha=0.10, color='#C62828')
-            axes[0].set(xlabel='V_total [cm³]', ylabel='P [bar]', title='P-V Diagram')
-            axes[0].grid(alpha=0.3)
-
-            axes[1].set_facecolor('white')
-            axes[1].plot(th_a, Ra['P'] / 1e5, '#C62828', lw=2)
-            axes[1].set(xlabel='θ [°]', ylabel='P [bar]', title='Pressure vs θ')
-            axes[1].grid(alpha=0.3)
-
-            axes[2].set_facecolor('white')
-            axes[2].axhline(params['T_h'], color='#C62828', ls='--', lw=1.5,
-                            label=f'T_h = {params["T_h"]} K')
-            axes[2].axhline(params['T_k'], color='#1565C0', ls='--', lw=1.5,
-                            label=f'T_k = {params["T_k"]} K')
-            axes[2].plot(th_a, Ra['T_e'], '#EF5350', lw=2, label='T_e')
-            axes[2].plot(th_a, Ra['T_c'], '#42A5F5', lw=2, label='T_c')
-            axes[2].set(xlabel='θ [°]', ylabel='T [K]', title='Gas Temperatures')
-            axes[2].legend(fontsize=8); axes[2].grid(alpha=0.3)
-
-            plt.tight_layout()
-            st.pyplot(fig)
-            plt.close(fig)
-
-        # 5. Heat Input Budget
-        st.subheader("🔥 Heat Input Budget — Estimated Upper-Bound (Adiabatic)")
-        show_heat_budget(La, Q_in_max, fixed_Qin_mode=_fqm_a)
-
-        # 6. Validation checks
-        with st.expander("🔍 Validation checks", expanded=False):
-            delta, ok = validate_mass_conservation(sim_a['result'], sim_a['geom'], sim_a['gas'])
-            (st.success if ok else st.error)(
-                f"{'✅' if ok else '❌'} Mass conservation: {delta:.3f} %"
-                + (" < 2 % ✓" if ok else " > 2 % limit"))
-            err, ok = validate_first_law(La)
-            (st.success if ok else st.error)(
-                f"{'✅' if ok else '❌'} First-law error: {err:.6f} %")
-            eta_b, eta_c, ok = validate_carnot(La)
-            (st.success if ok else st.error)(
-                f"{'✅' if ok else '❌'} η_brake = {eta_b*100:.3f}%  "
-                f"{'≤' if ok else '>'} η_Carnot = {eta_c*100:.2f}%  "
-                f"({La['frac_carnot']*100:.1f}% of Carnot)")
-            W1, W2, ratio_p, ok_p = validate_pressure_scaling(params, losses_flags)
-            if W1:
-                (st.success if ok_p else st.error)(
-                    f"{'✅' if ok_p else '❌'} Pressure scaling ratio = {ratio_p:.5f} (expected 2.000)")
-
-        # 7. Export
-        if st.button("📥 Export to Excel (Adiabatic)"):
-            try:
-                excel_bytes = export_excel_v10("Adiabatic", sim_a, Q_in_max)
-                fname = f"stirling_v10_adiabatic_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
-                st.download_button("⬇️ Download Excel (Adiabatic)", excel_bytes, fname,
-                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-            except Exception as e:
-                st.error(f"Export error: {e}")
+# Adiabatic-only tab removed from main UI.
+# The adiabatic model is shown inside the Schmidt vs Adiabatic Comparison tab.
 
 
-# ════════════════════════════════════════════════════════════════════════════
-# TAB 3 — BOTH MODELS
-# ════════════════════════════════════════════════════════════════════════════
 with tab_both:
-    st.header("⚖️ Both Models — Side-by-Side Comparison")
+    st.header("⚖️ Schmidt vs Adiabatic Comparison")
 
     use_regen_both = st.checkbox("Schmidt: with regenerator", value=True,
                                  key='both_regen')
@@ -1341,7 +1188,7 @@ with tab_both:
             st.markdown("**Adiabatic**")
             show_heat_budget(La, Q_in_max, fixed_Qin_mode=_fqm_b)
 
-        if st.button("📥 Export to Excel (Both Models)"):
+        if st.button("📥 Export to Excel (Schmidt vs Adiabatic Comparison)"):
             try:
                 excel_bytes = export_excel_v10("Schmidt", sim_s_display, Q_in_max)
                 fname = f"stirling_v10_both_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
@@ -1457,7 +1304,8 @@ with tab_optimize:
             "Select optimization stage:",
             ["Stage 2 — Constrained Geometry Optimization (Prototype 2)",
              "Stage 3 — Operating Conditions on Prototype 2",
-             "Stage 4 — Full Free Geometry Optimization"],
+             "Stage 4 — Full Free Geometry Optimization",
+             "Custom Free Optimization"],
             horizontal=False
         )
 
@@ -1525,8 +1373,8 @@ with tab_optimize:
                                value=True, key=f"s2_{key}"):
                     open_specs_s2.append((key, lo, hi))
 
-        obj_s2  = st.radio("Objective:", ["Max Power", "Max Efficiency", "Balanced"],
-                           horizontal=True, key="obj_s2")
+        obj_s2 = "Max Power"
+        st.info("Objective: Maximize brake power")
         method_s2 = st.radio("Search method:",
                              ["Coarse-Fine (fast)", "LHS (better coverage)"],
                              horizontal=True, key="method_s2")
@@ -1888,21 +1736,9 @@ with tab_optimize:
                                value=True, key=f"s3_{key}"):
                     open_specs_s3.append((key, lo, hi))
 
-        st.markdown("### Balanced score")
-        st.caption(
-            "Stage 4 always returns three named full-geometry designs: "
-            "Max Power, Max Efficiency, and Balanced. "
-            "This slider affects only the Balanced point."
-        )
-        w_P_s3 = st.slider(
-            "Balanced weight: Power ↔ Efficiency",
-            0.0, 1.0, 0.5, 0.05,
-            key="wP_s3"
-        )
-        st.caption(
-            f"Balanced Score = {w_P_s3:.2f} × (P/P_ref) + "
-            f"{1-w_P_s3:.2f} × (η/η_ref)"
-        )
+        st.markdown("### Objective")
+        st.info("Objective: maximize brake power under Q_in ≤ 1500 W")
+        w_P_s3 = 1.0
 
         method_s3 = st.radio("Search method:",
                              ["LHS (recommended)", "Coarse-Fine", "Bayesian"],
@@ -1910,8 +1746,8 @@ with tab_optimize:
         n_s3 = (st.slider("LHS samples", 100, 1000, 400, 50, key="n_s3")
                 if "LHS" in method_s3 else 400)
 
-        Q_in_max_s3 = st.slider("Q_in ceiling [W]", 500, 3000, 1500, 100,
-                                 key="qmax_s3")
+        Q_in_max_s3 = 1500.0
+        st.info("Stage 4 uses a fixed heat input ceiling: Q_in ≤ 1500 W")
 
         if st.button("🚀 Run Stage 4 Full Geometry Optimization",
                      disabled=len(open_specs_s3) == 0, key="run_s3"):
@@ -1928,8 +1764,8 @@ with tab_optimize:
                           "Coarse-Fine": "coarse_fine",
                           "Bayesian": "bayesian"}
             try:
-                # V10: Stage 4 returns three named feasible full-geometry designs:
-                # Max Power, Max Efficiency, Balanced.
+                # V10: Stage 4 returns named feasible full-geometry designs.
+                # Main UI reports Max Power only.
                 base_ref = st.session_state.get('baseline', {}).get('losses')
                 s3_named = stage3_search_named(
                     p_s3, open_specs_s3, Q_in_max_s3,
@@ -1943,27 +1779,25 @@ with tab_optimize:
                 )
                 prog3.empty()
 
-                if not s3_named or s3_named.get('balanced') is None:
+                if not s3_named or s3_named.get('max_power') is None:
                     st.error("Stage 4 found no feasible full-geometry solution.")
                 else:
                     st.session_state['stage3_results'] = {
                         'named': s3_named,
-                        'best_params': s3_named['balanced']['params'],
-                        'best_losses': s3_named['balanced']['losses'],
+                        'best_params': s3_named['max_power']['params'],
+                        'best_losses': s3_named['max_power']['losses'],
                         'feasible': s3_named.get('feasible_results', []),
                         'raw': s3_named.get('raw_results', []),
-                        'objective': 'Named designs',
+                        'objective': 'Max Power',
                         'Q_in_max': Q_in_max_s3
                     }
 
-                    st.success("✅ Stage 4 complete — Max Power, Max Efficiency, and Balanced full-geometry designs selected.")
+                    st.success("✅ Stage 4 complete — Max Power full-geometry design selected.")
 
-                    # Show the three named designs
+                    # Show Max Power design only
                     rows3 = []
                     for label, key in [
                         ("Max Power", "max_power"),
-                        ("Max Efficiency", "max_efficiency"),
-                        ("Balanced", "balanced"),
                     ]:
                         d = s3_named.get(key)
                         if not d:
@@ -2284,34 +2118,23 @@ with tab_optimize:
         )
 
         P_max_s4 = st.slider("Max pressure [bar]", 1.0, 10.0, 10.0, 0.5, key="Pmax_s4")
-        f_max_s4 = st.slider("Max frequency [Hz]", 5.0, 25.0, 20.0, 1.0, key="fmax_s4")
-        st.markdown("### Balanced score")
-        st.caption(
-            "Stage 3 always returns three named operating points for each gas: "
-            "Max Power, Max Efficiency, and Balanced. "
-            "This slider affects only the Balanced point."
-        )
-        w_P_s4 = st.slider(
-            "Balanced weight: Power ↔ Efficiency",
-            0.0, 1.0, 0.5, 0.05,
-            key="wP_s4"
-        )
-        st.caption(
-            f"Balanced Score = {w_P_s4:.2f} × (P/P_ref) + "
-            f"{1-w_P_s4:.2f} × (η/η_ref)"
-        )
+        f_max_s4 = 10.0
+        st.info("Frequency is fixed: f = 10 Hz")
+        st.markdown("### Objective")
+        st.caption("Stage 3 maximizes brake power under Q_in ≤ 1500 W. Frequency is fixed at 10 Hz.")
+        w_P_s4 = 1.0
 
-        n_s4 = st.slider("LHS samples per gas", 50, 400, 200, 50, key="n_s4")
+        n_s4 = st.slider("LHS samples", 50, 400, 200, 50, key="n_s4")
 
-        if st.button("🚀 Run Stage 3 Operating Optimization (Air + Helium + Hydrogen)", key="run_s4"):
+        if st.button("🚀 Run Stage 3", key="run_s4"):
             lf_s4 = dict(flow=True, regen_imp=True, mechanical=True,
                          wall_cond=True, leakage=True, shuttle=False)
-            prog4 = st.progress(0, "Starting Stage 3 operating-condition optimization...")
+            prog4 = st.progress(0, "Running Stage 3...")
             def cb_s4(f, msg): prog4.progress(min(f, 1.0), msg)
 
             try:
                 # V10: Stage 3 runs on Prototype 2 geometry and returns
-                # Max Power / Max Efficiency / Balanced for each gas.
+                # Max Power for each gas.
                 base_ref = st.session_state.get('proto2_result', {}).get('losses')
                 s4_results = stage4_search_named(
                     proto2_params,
@@ -2337,8 +2160,6 @@ with tab_optimize:
                 r = s4.get(gas_name, {})
                 for obj_label, key in [
                     ("Max Power", "max_power"),
-                    ("Max Efficiency", "max_efficiency"),
-                    ("Balanced", "balanced"),
                 ]:
                     d = r.get(key)
                     if not d:
@@ -2356,10 +2177,50 @@ with tab_optimize:
                             'P_brake [W]':  f"{bl_g['P_brake']:.2f}",
                             'η_net [%]':    f"{bl_g['eta_brake']*100:.2f}",
                             'Q_in [W]':     f"{q_g:.1f}",
+                            'Heat margin [W]': f"{Q_in_max - q_g:+.1f}",
                             'Feasible':     '🟢 Yes' if q_g <= Q_in_max else '🔴 No',
                         })
             if rows_s4:
                 st.table(rows_s4)
+
+            # Show high-performance candidates rejected by heat limit.
+            blocked_rows = []
+            for gas_name in ['Air', 'Helium', 'Hydrogen']:
+                r = s4.get(gas_name, {})
+                raw = r.get('raw_results', [])
+                for item in raw:
+                    if not isinstance(item, (tuple, list)) or len(item) < 3:
+                        continue
+                    score, p_raw, l_raw = item[0], item[1], item[2]
+                    if not p_raw or not l_raw:
+                        continue
+                    q_raw = l_raw.get('Q_in_W', 0)
+                    P_raw = l_raw.get('P_brake', 0)
+                    # Show only near-boundary rejected candidates.
+                    # Very high Q_in cases are obvious and not useful for diagnosis.
+                    if Q_in_max < q_raw <= 2500 and P_raw > 0:
+                        blocked_rows.append({
+                            'Gas': gas_name,
+                            'P_mean [bar]': f"{p_raw.get('P_mean_bar', 1):.2f}",
+                            'T_h [K]': f"{p_raw.get('T_h', 873):.0f}",
+                            'f [Hz]': f"{p_raw.get('f', 10):.1f}",
+                            'P_brake [W]': f"{P_raw:.2f}",
+                            'η_net [%]': f"{l_raw.get('eta_brake', 0)*100:.2f}",
+                            'Required Q_in [W]': f"{q_raw:.1f}",
+                            'Heat deficit [W]': f"{q_raw - Q_in_max:.1f}",
+                        })
+
+            if blocked_rows:
+                blocked_rows = sorted(
+                    blocked_rows,
+                    key=lambda row: float(row['Heat deficit [W]'])
+                )[:15]
+                with st.expander("Candidates blocked by heat limit — Q_in > 1500 W"):
+                    st.caption(
+                        "Near-boundary rejected candidates only. "
+                        "These show cases that almost fit the 1500 W heat limit but slightly exceeded it."
+                    )
+                    st.table(blocked_rows)
 
             # ── Schmidt vs Adiabatic validation for Stage 3 operating points ──
             try:
@@ -2371,8 +2232,6 @@ with tab_optimize:
                     r = s4.get(gas_name, {})
                     for obj_label, key in [
                         ("Max Power", "max_power"),
-                        ("Max Efficiency", "max_efficiency"),
-                        ("Balanced", "balanced"),
                     ]:
                         d = r.get(key)
                         if d and d.get('params'):
@@ -2387,166 +2246,15 @@ with tab_optimize:
                 st.warning(f"Could not run Stage 3 Schmidt vs Adiabatic comparison: {e}")
 
             # ── Stage 3 additional operating-condition graphs ───────────────
-            try:
-                import pandas as pd
-
-                plot_rows = []
-                for gas_name in ['Air', 'Helium', 'Hydrogen']:
-                    r = s4.get(gas_name, {})
-                    for obj_label, key in [
-                        ("Max Power", "max_power"),
-                        ("Max Efficiency", "max_efficiency"),
-                        ("Balanced", "balanced"),
-                    ]:
-                        d = r.get(key)
-                        if not d:
-                            continue
-                        L = d.get('losses', {})
-                        P = d.get('params', {})
-                        if not L or not P:
-                            continue
-
-                        plot_rows.append({
-                            "Gas": gas_name,
-                            "Objective": obj_label,
-                            "P_mean_bar": float(P.get('P_mean_bar', 1.0)),
-                            "T_h": float(P.get('T_h', 873.0)),
-                            "f": float(P.get('f', 10.0)),
-                            "P_brake": float(L.get('P_brake', 0.0)),
-                            "eta_net": float(L.get('eta_brake', 0.0)) * 100.0,
-                            "Q_in": float(L.get('Q_in_W', 0.0)),
-                        })
-
-                df_op = pd.DataFrame(plot_rows)
-
-                if not df_op.empty:
-                    st.subheader("📈 Stage 3 Operating Results — Additional Graphs")
-
-                    # 1. Power vs efficiency operating map
-                    fig_om, ax_om = plt.subplots(figsize=(8.5, 5.2))
-                    markers_obj = {
-                        "Max Power": "o",
-                        "Max Efficiency": "s",
-                        "Balanced": "^",
-                    }
-
-                    for obj_name, marker in markers_obj.items():
-                        sub = df_op[df_op["Objective"] == obj_name]
-                        ax_om.scatter(
-                            sub["eta_net"],
-                            sub["P_brake"],
-                            s=90,
-                            marker=marker,
-                            label=obj_name,
-                            alpha=0.85
-                        )
-
-                        for _, row in sub.iterrows():
-                            ax_om.annotate(
-                                row["Gas"],
-                                (row["eta_net"], row["P_brake"]),
-                                textcoords="offset points",
-                                xytext=(5, 5),
-                                fontsize=8
-                            )
-
-                    ax_om.set(
-                        xlabel="η_net [%]",
-                        ylabel="P_brake [W]",
-                        title="Operating Map — Power vs Efficiency"
-                    )
-                    ax_om.grid(alpha=0.3)
-                    ax_om.legend()
-                    st.pyplot(fig_om)
-                    plt.close(fig_om)
-
-                    st.caption(
-                        "This map shows the tradeoff between useful shaft power and net efficiency "
-                        "for the optimized operating conditions of each gas."
-                    )
-
-                    # 2. Gas comparison by objective — brake power
-                    st.subheader("⚙️ Brake Power by Gas and Objective")
-                    objectives = ["Max Power", "Max Efficiency", "Balanced"]
-                    gases = ["Air", "Helium", "Hydrogen"]
-
-                    x = np.arange(len(gases))
-                    width = 0.24
-
-                    fig_bp, ax_bp = plt.subplots(figsize=(9, 5))
-                    for i, obj_name in enumerate(objectives):
-                        vals = []
-                        for gas_name in gases:
-                            sub = df_op[(df_op["Gas"] == gas_name) & (df_op["Objective"] == obj_name)]
-                            vals.append(float(sub["P_brake"].iloc[0]) if not sub.empty else 0.0)
-
-                        ax_bp.bar(x + (i-1)*width, vals, width, label=obj_name)
-
-                    ax_bp.set_xticks(x)
-                    ax_bp.set_xticklabels(gases)
-                    ax_bp.set_ylabel("P_brake [W]")
-                    ax_bp.set_title("Brake Power Comparison — Gas and Optimization Target")
-                    ax_bp.grid(axis='y', alpha=0.3)
-                    ax_bp.legend()
-                    st.pyplot(fig_bp)
-                    plt.close(fig_bp)
-
-                    # 3. Selected operating setpoints: pressure and frequency
-                    st.subheader("🎛️ Selected Operating Setpoints")
-                    df_bal = df_op[df_op["Objective"] == "Balanced"].copy()
-
-                    if not df_bal.empty:
-                        fig_set, ax_set = plt.subplots(1, 2, figsize=(11, 4.5))
-
-                        ax_set[0].bar(df_bal["Gas"], df_bal["P_mean_bar"])
-                        ax_set[0].set_ylabel("P_mean [bar]")
-                        ax_set[0].set_title("Balanced Design — Selected Mean Pressure")
-                        ax_set[0].grid(axis='y', alpha=0.3)
-
-                        ax_set[1].bar(df_bal["Gas"], df_bal["f"])
-                        ax_set[1].set_ylabel("Frequency [Hz]")
-                        ax_set[1].set_title("Balanced Design — Selected Frequency")
-                        ax_set[1].grid(axis='y', alpha=0.3)
-
-                        plt.tight_layout()
-                        st.pyplot(fig_set)
-                        plt.close(fig_set)
-
-                        st.caption(
-                            "These setpoints show how the optimizer uses pressure and frequency "
-                            "to improve the same Prototype 2 geometry under different gases."
-                        )
-
-                    # 4. Heat-budget usage
-                    st.subheader("🔥 Heat Budget Usage")
-                    fig_q, ax_q = plt.subplots(figsize=(9, 5))
-
-                    df_bal_q = df_op[df_op["Objective"] == "Balanced"].copy()
-                    if not df_bal_q.empty:
-                        q_used = df_bal_q["Q_in"].to_numpy()
-                        ax_q.bar(df_bal_q["Gas"], q_used)
-                        ax_q.axhline(Q_in_max, linestyle='--', linewidth=2, label=f"Q_in limit = {Q_in_max:.0f} W")
-                        ax_q.set_ylabel("Q_in [W]")
-                        ax_q.set_title("Balanced Operating Point — Heat Input vs Budget")
-                        ax_q.grid(axis='y', alpha=0.3)
-                        ax_q.legend()
-                        st.pyplot(fig_q)
-                    plt.close(fig_q)
-
-                    st.caption(
-                        "This graph checks whether the selected operating point actually uses the available heat budget "
-                        "or stays far below it."
-                    )
-
-            except Exception as e:
-                st.warning(f"Could not build Stage 3 operating-condition graphs: {e}")
+            # Removed from main UI to keep Stage 3 focused on:
+            # 1. results tables
+            # 2. heat-limit diagnostics
+            # 3. pressure sweep check
 
             # Power–Pressure graph — Prototype 1 vs Prototype 2
-            st.subheader("Power vs Pressure — Prototype 1 vs Prototype 2 by Gas")
+            st.subheader("Pressure Sweep Check")
             st.caption(
-                "Dashed curves = original Prototype 1 geometry. "
-                "Solid curves with markers = optimized Prototype 2 geometry. "
-                "Markers are staggered so overlapping gas curves remain visible."
+                "Diagnostic plot: shows how pressure affects brake power and where the 1500 W heat limit blocks higher pressure."
             )
 
             P_vals_s4 = np.linspace(1.0, P_max_s4, 25)
@@ -2568,10 +2276,9 @@ with tab_optimize:
             for gas_name in ['Air', 'Helium', 'Hydrogen']:
                 color = colors_gas[gas_name]
 
-                # Use each gas's Stage 4 balanced result to get a representative T_h and f.
-                # If balanced is unavailable, fall back to max_power, then default values.
+                # Use each gas's Stage 3 Max Power result to get representative T_h and f.
                 r = s4.get(gas_name, {})
-                chosen = r.get('balanced') or r.get('max_power') or r.get('max_efficiency')
+                chosen = r.get('max_power')
                 chosen_params = chosen.get('params') if chosen else {}
 
                 T_ref = chosen_params.get('T_h', proto2_params.get('T_h', params.get('T_h', 873)))
@@ -2672,6 +2379,167 @@ with tab_optimize:
                 "× markers indicate pressure points where Q_in exceeds the selected heat budget. "
                 "Hydrogen may show high theoretical performance, but practical use requires strict safety, sealing, leakage control, and material compatibility."
             )
+
+
+    # ── Custom Free Optimization ──────────────────────────────────────────────
+    elif stage_choice.startswith("Custom Free Optimization"):
+        st.subheader("Custom Free Optimization")
+        st.info(
+            "Choose which parameters are free and which stay locked. "
+            "Objective is fixed: maximize brake power under Q_in ≤ 1500 W."
+        )
+
+        Q_in_max_custom = 1500.0
+        st.info("Fixed heat input ceiling: Q_in ≤ 1500 W")
+
+        custom_gas = st.selectbox(
+            "Working gas",
+            ["Air", "Helium", "Hydrogen"],
+            index=["Air", "Helium", "Hydrogen"].index(params.get("gas", "Air"))
+                 if params.get("gas", "Air") in ["Air", "Helium", "Hydrogen"] else 0,
+            key="custom_gas"
+        )
+
+        custom_defs = [
+            ("P_mean_bar",  "Mean pressure",        1.0, 10.0, "bar"),
+            ("T_h",         "Hot temperature",      573, 1273, "K"),
+            ("f",           "Frequency",            5.0, 25.0, "Hz"),
+            ("D_displacer", "Displacer diameter",   40, 120, "mm"),
+            ("S_displacer", "Displacer stroke",     50, 180, "mm"),
+            ("D_power",     "Power piston diameter",30, 120, "mm"),
+            ("S_power",     "Power piston stroke",  20, 120, "mm"),
+            ("phi_deg",     "Phase angle",          60, 120, "°"),
+            ("D_r",         "Regenerator diameter", 20, 80, "mm"),
+            ("L_r",         "Regenerator length",   50, 400, "mm"),
+            ("d_wire",      "Wire diameter",        0.5, 3.0, "mm"),
+            ("porosity",    "Porosity",             0.5, 0.99, ""),
+        ]
+
+        st.markdown("### Open / Locked parameters")
+        st.caption("Checked = optimizer may change it. Unchecked = stays locked at the current sidebar value.")
+
+        open_specs_custom = []
+        cols_custom = st.columns(2)
+
+        for idx, (key, name, lo, hi, unit) in enumerate(custom_defs):
+            with cols_custom[idx % 2]:
+                checked = st.checkbox(
+                    f"Open: {name} ({lo}–{hi} {unit})",
+                    value=False,
+                    key=f"custom_open_{key}"
+                )
+                current_val = params.get(key, None)
+                if current_val is not None:
+                    st.caption(f"Current locked value: {current_val}")
+                if checked:
+                    open_specs_custom.append((key, lo, hi))
+
+        method_custom = st.radio(
+            "Search method",
+            ["LHS", "Coarse-Fine", "Bayesian"],
+            horizontal=True,
+            key="method_custom"
+        )
+
+        n_custom = (
+            st.slider("LHS samples", 100, 1200, 500, 50, key="n_custom")
+            if method_custom == "LHS" else 400
+        )
+
+        if st.button(
+            "🚀 Run Custom Free Optimization",
+            disabled=len(open_specs_custom) == 0,
+            key="run_custom_opt"
+        ):
+            lf_custom = dict(flow=True, regen_imp=True, mechanical=True,
+                             wall_cond=True, leakage=True, shuttle=False)
+
+            p_custom = dict(params)
+            p_custom.update({
+                "gas": custom_gas,
+                "Q_in_max": Q_in_max_custom
+            })
+
+            method_key = {
+                "LHS": "lhs",
+                "Coarse-Fine": "coarse_fine",
+                "Bayesian": "bayesian",
+            }[method_custom]
+
+            prog_custom = st.progress(0, "Running custom free optimization...")
+            def cb_custom(f, msg):
+                prog_custom.progress(min(f, 1.0), msg)
+
+            try:
+                operating_keys = {"P_mean_bar", "T_h", "f"}
+                open_keys = {spec[0] for spec in open_specs_custom}
+
+                if open_keys.isdisjoint(operating_keys):
+                    # Geometry-only custom search:
+                    # use the same optimizer as Stage 2 for the same mathematical problem.
+                    best_p, best_l, raw = prototype2_search(
+                        p_custom,
+                        open_specs_custom,
+                        "power",
+                        "schmidt",
+                        lf_custom,
+                        method=method_key,
+                        n_samples=n_custom,
+                        progress_cb=cb_custom,
+                    )
+                    feasible = raw
+                else:
+                    # Operating-condition search:
+                    # use Stage 3 style search when P_mean/T_h/f are variables.
+                    best_p, best_l, feasible, raw = stage3_search(
+                        p_custom,
+                        open_specs_custom,
+                        "power",
+                        Q_in_max_custom,
+                        model_key="schmidt",
+                        losses_flags=lf_custom,
+                        method=method_key,
+                        n_samples=n_custom,
+                        progress_cb=cb_custom,
+                    )
+                prog_custom.empty()
+
+                if best_l is None:
+                    st.error("No feasible custom optimization result found.")
+                else:
+                    st.session_state["custom_free_result"] = {
+                        "params": best_p,
+                        "losses": best_l,
+                        "feasible": feasible,
+                        "raw": raw,
+                        "open_specs": open_specs_custom,
+                        "Q_in_max": Q_in_max_custom,
+                    }
+
+                    q = best_l.get("Q_in_W", 0)
+                    st.success(f"✅ Custom optimization complete — Q_in = {q:.1f} W ≤ {Q_in_max_custom:.0f} W")
+
+                    c1, c2, c3, c4, c5 = st.columns(5)
+                    c1.metric("P_brake [W]", f"{best_l.get('P_brake', 0):.2f}")
+                    c2.metric("η_net [%]", f"{best_l.get('eta_brake', 0)*100:.2f}")
+                    c3.metric("Q_in [W]", f"{q:.1f}")
+                    c4.metric("P_mean [bar]", f"{best_p.get('P_mean_bar', 1):.2f}")
+                    c5.metric("T_h [K]", f"{best_p.get('T_h', 0):.0f}")
+
+                    rows = []
+                    for key, name, lo, hi, unit in custom_defs:
+                        rows.append({
+                            "Parameter": name,
+                            "Status": "Open" if any(s[0] == key for s in open_specs_custom) else "Locked",
+                            "Final value": best_p.get(key, params.get(key, "")),
+                            "Unit": unit,
+                        })
+                    st.table(rows)
+
+            except Exception as e:
+                prog_custom.empty()
+                st.error(f"Custom optimization error: {e}")
+
 
     # ── Full Excel export — shown only after optimization results exist ─────────
     st.markdown("---")

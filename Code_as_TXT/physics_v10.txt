@@ -308,6 +308,73 @@ def regenerator_effectiveness_ntu(result, geom, gas, params_si, eps_input):
         return 0.0, 0.0, 0.0, 0.0, 0.0
 
 
+def adiabatic_cycle_match_pressure(geom, gas, P_target, M_guess, max_cycles=20, tol=0.5):
+    """
+    Run the adiabatic model with gas mass adjusted so that:
+        mean(P_adiabatic) = P_target
+
+    This gives a clearer Schmidt-vs-Adiabatic comparison:
+    same geometry, same gas, same temperatures, same target mean pressure.
+    """
+    def run_for_mass(M):
+        if M <= 0:
+            return None
+        return adiabatic_cycle(geom, dict(gas), M, max_cycles=max_cycles, tol=tol)
+
+    def pressure_error(M):
+        res = run_for_mass(M)
+        if res is None:
+            raise ValueError("adiabatic solver failed")
+        return float(np.mean(res['P']) - P_target)
+
+    # First try around the Schmidt mass.
+    lo = max(M_guess * 0.20, 1e-9)
+    hi = max(M_guess * 5.00, lo * 10)
+
+    f_lo = None
+    f_hi = None
+
+    # Expand bracket until the target pressure is bracketed.
+    for _ in range(10):
+        try:
+            f_lo = pressure_error(lo)
+            f_hi = pressure_error(hi)
+            if f_lo == 0:
+                return run_for_mass(lo)
+            if f_hi == 0:
+                return run_for_mass(hi)
+            if f_lo * f_hi < 0:
+                break
+        except Exception:
+            pass
+
+        lo = max(lo * 0.5, 1e-10)
+        hi = hi * 2.0
+    else:
+        # Fallback: pressure is almost linear with mass, so scale M_guess.
+        trial = run_for_mass(M_guess)
+        if trial is None:
+            return None
+        P_mean_trial = float(np.mean(trial['P']))
+        if P_mean_trial <= 0:
+            return None
+        M_scaled = M_guess * (P_target / P_mean_trial)
+        return run_for_mass(M_scaled)
+
+    try:
+        M_match = brentq(lambda M: pressure_error(M), lo, hi, xtol=1e-10, rtol=1e-8, maxiter=40)
+        return run_for_mass(M_match)
+    except Exception:
+        trial = run_for_mass(M_guess)
+        if trial is None:
+            return None
+        P_mean_trial = float(np.mean(trial['P']))
+        if P_mean_trial <= 0:
+            return None
+        M_scaled = M_guess * (P_target / P_mean_trial)
+        return run_for_mass(M_scaled)
+
+
 # ── Loss model ────────────────────────────────────────────────────────────────
 def compute_losses(result, geom, gas, params_si, losses_flags):
     """
@@ -503,7 +570,7 @@ def compute_losses(result, geom, gas, params_si, losses_flags):
 def simulate(params, model='schmidt', losses_flags=None):
     """
     Run Schmidt and/or Adiabatic cycle, apply loss model.
-    Both models always use the same gas mass M (Option A).
+    Schmidt uses P_target directly. Adiabatic adjusts gas mass so mean(P) = P_target.
 
     Returns dict with keys: result, losses, geom, gas, params, params_si,
                             losses_flags, model, M_schmidt.
@@ -526,7 +593,7 @@ def simulate(params, model='schmidt', losses_flags=None):
     if model == 'schmidt':
         result = result_s
     else:
-        result = adiabatic_cycle(geom, gas, M_schmidt)
+        result = adiabatic_cycle_match_pressure(geom, gas, P_target, M_schmidt)
         if result is None:
             return None
 
