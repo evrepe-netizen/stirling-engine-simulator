@@ -456,7 +456,7 @@ with st.sidebar:
     st.number_input("Frequency [Hz]", 1, 100, step=1, key='f')
     st.number_input(
         "Max volume ratio α = V_swc/V_swe",
-        0.8, 2.0, value=1.2, step=0.05, key='alpha_max',
+        0.8, 2.0, value=1.3, step=0.05, key='alpha_max',
         help=(
             "Engineering constraint for Schmidt-based geometry optimization. "
             "Schmidt assumes fixed hot/cold gas temperatures and can over-reward very large power-piston swept volumes. "

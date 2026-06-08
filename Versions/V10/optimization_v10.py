@@ -92,10 +92,10 @@ def _engineering_geometry_ok(params):
 
         alpha = V_swc / V_swe <= alpha_max
 
-    Default alpha_max = 1.2.
+    Default alpha_max = 1.3.
     """
     alpha = _volume_ratio_alpha(params)
-    alpha_max = float(params.get('alpha_max', 1.2))
+    alpha_max = float(params.get('alpha_max', 1.3))
     return alpha <= alpha_max
 
 
@@ -106,10 +106,10 @@ def _score(losses, params, objective):
     Rejects non-physical Gamma volume ratios using alpha = V_swc/V_swe.
     """
     if not _engineering_geometry_ok(params):
-        return -1e6
+        return -float('inf')
 
     if losses['W_shaft'] <= 0 or losses['Q_in'] <= 0:
-        return -1e6
+        return -float('inf')
 
     Q_req = losses['Q_in_W']
     Q_max = params.get('Q_in_max', 3000)

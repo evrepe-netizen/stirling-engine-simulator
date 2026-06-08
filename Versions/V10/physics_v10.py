@@ -434,27 +434,12 @@ def compute_losses(result, geom, gas, params_si, losses_flags):
     out['Q_e'] = W_e
 
     # ── Regenerator imperfection heat loss ────────────────────────────────────
-    # Use the gas mass that is actually shuttled through the regenerator,
-    # not the full total gas mass M. Using full M is an aggressive upper bound
-    # and can strongly overestimate Q_miss.
-    if 'm_e' in result:
-        m_shuttled = float(np.max(result['m_e']) - np.min(result['m_e']))
-    else:
-        # Kinematic Schmidt fallback: estimate exchanged mass fraction from
-        # displacer swept volume relative to total active gas volume.
-        denom = geom['V_swe'] + geom['V_swc'] + geom['V_r_lumped']
-        m_shuttled = M * (geom['V_swe'] / denom) if denom > 0 else 0.0
-
-    # Clamp to physically reasonable bounds.
-    m_shuttled = max(0.0, min(float(m_shuttled), float(M)))
-    out['m_shuttled'] = m_shuttled
-
     if losses_flags.get('regen_imp', True):
         if no_regen:
-            # No heat recovery: all shuttled gas must be reheated each cycle.
-            out['Q_miss'] = m_shuttled * gas['Cv'] * (gas['T_h'] - gas['T_k'])
+            # Full reheat every cycle — no heat recovery at all
+            out['Q_miss'] = M * gas['Cv'] * (gas['T_h'] - gas['T_k'])
         else:
-            out['Q_miss'] = m_shuttled * gas['Cv'] * (gas['T_h'] - gas['T_k']) * (1 - eps_reg_eff)
+            out['Q_miss'] = M * gas['Cv'] * (gas['T_h'] - gas['T_k']) * (1 - eps_reg_eff)
     else:
         out['Q_miss'] = 0.0
 
