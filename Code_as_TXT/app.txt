@@ -1204,87 +1204,61 @@ with tab_both:
 # TAB 4 — ANIMATION
 # ════════════════════════════════════════════════════════════════════════════
 with tab_animation:
-    st.header("🎬 Engine Animation")
-    st.caption(
-        "Visual explanation of the Gamma-type Stirling engine motion. "
-        "Use this tab during presentation to connect the equations to the physical mechanism."
+    st.header("🎬 Engine Cycle Animation")
+    st.info(
+        "Educational visualization of the Gamma Stirling cycle. "
+        "The main animation runs continuously, followed by four synchronized static states."
     )
 
-    anim_options = ["Prototype 1 — Current inputs"]
-
-    if 'proto2_result' in st.session_state:
-        anim_options.append("Prototype 2 — Optimized constrained geometry")
-
-    if 'stage3_results' in st.session_state:
-        anim_options.append("Stage 4 Balanced — Full free geometry benchmark")
-
-    anim_choice = st.radio(
-        "Select design to animate:",
-        anim_options,
-        horizontal=False,
-        key="animation_design_choice"
-    )
-
-    if anim_choice.startswith("Prototype 1"):
-        anim_params = dict(params)
-        anim_label = "Prototype 1 — baseline/current input geometry"
-
-    elif anim_choice.startswith("Prototype 2"):
-        anim_params = dict(st.session_state['proto2_result']['params'])
-        anim_label = "Prototype 2 — constrained optimized geometry"
-
-    else:
-        s4_named = st.session_state['stage3_results'].get('named', {})
-        anim_params = dict(s4_named.get('balanced', {}).get('params', params))
-        anim_label = "Stage 4 Balanced — theoretical full-geometry benchmark"
-
-    st.info(f"Selected: **{anim_label}**")
-
-    c_anim1, c_anim2, c_anim3 = st.columns(3)
-    with c_anim1:
-        st.metric("Gas", anim_params.get('gas', 'Air'))
-    with c_anim2:
-        st.metric("P_mean", f"{anim_params.get('P_mean_bar', 1.0):.1f} bar")
-    with c_anim3:
-        st.metric("f", f"{anim_params.get('f', 10.0):.1f} Hz")
-
-    st.markdown("### Geometry used for animation")
     try:
-        import pandas as pd
+        geom_frozen   = _freeze_dict(build_geometry(to_si(params)))
+        params_frozen = _freeze_dict(params)
 
-        rows_anim_geom = [
-            {"Parameter": "D_displacer [mm]", "Value": anim_params.get('D_displacer', params.get('D_displacer', 75))},
-            {"Parameter": "S_displacer [mm]", "Value": anim_params.get('S_displacer', params.get('S_displacer', 101.5))},
-            {"Parameter": "D_power [mm]", "Value": anim_params.get('D_power', params.get('D_power', 65.6))},
-            {"Parameter": "S_power [mm]", "Value": anim_params.get('S_power', params.get('S_power', 61.6))},
-            {"Parameter": "Phase angle φ [deg]", "Value": anim_params.get('phi_deg', params.get('phi_deg', 90))},
-            {"Parameter": "Regenerator length L_r [mm]", "Value": anim_params.get('L_r', params.get('L_r', 236))},
-            {"Parameter": "Regenerator diameter D_r [mm]", "Value": anim_params.get('D_r', params.get('D_r', 40))},
+        with st.spinner("Rendering main animation..."):
+            gif_b64 = build_engine_animation(geom_frozen, params_frozen, "Auto")
+
+        st.markdown("### Continuous cycle animation")
+        st.markdown(
+            f'<img src="data:image/gif;base64,{gif_b64}" '
+            f'style="width:100%;max-width:950px;border-radius:8px;" />',
+            unsafe_allow_html=True,
+        )
+
+        st.markdown("---")
+        st.markdown("### Four key states of the ideal Stirling cycle")
+        st.caption(
+            "Each state is a frozen frame synchronized with the engine drawing, "
+            "the P-V marker, and the T-S marker."
+        )
+
+        state_modes = [
+            ("State 1 — start of hot expansion", "Stage 1 — 1→2 Expansion"),
+            ("State 2 — end of hot expansion / start of cooling", "Stage 2 — 2→3 Cooling"),
+            ("State 3 — end of cooling / start of compression", "Stage 3 — 3→4 Compression"),
+            ("State 4 — end of compression / start of heating", "Stage 4 — 4→1 Heating"),
         ]
-        st.dataframe(pd.DataFrame(rows_anim_geom), width='stretch', hide_index=True)
-    except Exception:
-        pass
 
-    if st.button("🎞️ Generate Engine Animation", key="generate_animation_tab"):
-        with st.spinner("Rendering animation..."):
-            try:
-                geom_frozen   = _freeze_dict(build_geometry(to_si(anim_params)))
-                params_frozen = _freeze_dict(anim_params)
-                gif_b64 = build_engine_animation(geom_frozen, params_frozen)
+        cols = st.columns(2)
+        for idx, (label, mode) in enumerate(state_modes):
+            with cols[idx % 2]:
+                with st.spinner(f"Rendering {label}..."):
+                    state_b64 = build_engine_animation(geom_frozen, params_frozen, mode)
 
+                st.markdown(f"#### {label}")
                 st.markdown(
-                    f'<img src="data:image/gif;base64,{gif_b64}" '
-                    f'style="width:100%;max-width:850px;border-radius:8px;" />',
+                    f'<img src="data:image/gif;base64,{state_b64}" '
+                    f'style="width:100%;border-radius:8px;" />',
                     unsafe_allow_html=True,
                 )
 
-                st.success("Animation generated successfully.")
-            except Exception as e:
-                st.warning(f"Animation error: {e}")
+        st.success("Animation and four synchronized states generated successfully.")
+
+    except Exception as e:
+        st.warning(f"Animation error: {e}")
 
     st.caption(
-        "Note: the animation is a geometric/kinematic visualization. "
-        "The thermodynamic calculations are still performed in the Schmidt and optimization tabs."
+        "The animation is a qualitative educational visualization. "
+        "The P-V and T-S markers use the same phase as the engine animation."
     )
 
 
