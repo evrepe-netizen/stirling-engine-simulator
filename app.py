@@ -12,8 +12,9 @@ v10 changes vs v9.4:
   - Animation gauge overlap fix
 """
 
-import math, io, warnings, tempfile, os
+import math, io, warnings, tempfile, os, base64
 from datetime import datetime
+from pathlib import Path
 
 import numpy as np
 import matplotlib
@@ -904,11 +905,11 @@ def export_full_results_excel(params, Q_in_max):
     return bio.getvalue()
 
 # ── Tabs ──────────────────────────────────────────────────────────────────────
-tab_schmidt, tab_both, tab_animation, tab_optimize = st.tabs([
+tab_schmidt, tab_both, tab_optimize, tab_theory = st.tabs([
     "📊 Schmidt (Isothermal)",
     "⚖️ Schmidt vs Adiabatic Comparison",
-    "🎬 Animation",
     "🎯 Optimization",
+    "📚 Theory / Engine Cycle",
 ])
 
 
@@ -1203,63 +1204,231 @@ with tab_both:
 # ════════════════════════════════════════════════════════════════════════════
 # TAB 4 — ANIMATION
 # ════════════════════════════════════════════════════════════════════════════
-with tab_animation:
-    st.header("🎬 Engine Cycle Animation")
+with tab_theory:
+    st.header("📚 Theory / Engine Cycle")
     st.info(
-        "Educational visualization of the Gamma Stirling cycle. "
-        "The main animation runs continuously, followed by four synchronized static states."
+        "This page presents the Stirling engine cycle, updated educational animations, "
+        "and the main Schmidt-model theory used in the simulator."
     )
 
-    try:
-        geom_frozen   = _freeze_dict(build_geometry(to_si(params)))
-        params_frozen = _freeze_dict(params)
+    def _autoplay_video_html(video_path, max_width="100%"):
+        video_path = Path(video_path)
+        if not video_path.exists():
+            return None
 
-        with st.spinner("Rendering main animation..."):
-            gif_b64 = build_engine_animation(geom_frozen, params_frozen, "Auto")
+        data = base64.b64encode(video_path.read_bytes()).decode("utf-8")
+        return f"""
+        <div style="width:100%;display:flex;justify-content:center;">
+            <video autoplay loop muted playsinline
+                   style="width:100%;max-width:{max_width};height:auto;border-radius:10px;background:white;">
+                <source src="data:video/mp4;base64,{data}" type="video/mp4">
+            </video>
+        </div>
+        """
 
-        st.markdown("### Continuous cycle animation")
-        st.markdown(
-            f'<img src="data:image/gif;base64,{gif_b64}" '
-            f'style="width:100%;max-width:950px;border-radius:8px;" />',
-            unsafe_allow_html=True,
-        )
+    # ─────────────────────────────────────────────────────────────────────
+    # Section 1 — Animations
+    # ─────────────────────────────────────────────────────────────────────
+    st.subheader("🎬 Updated cycle animations")
 
-        st.markdown("---")
-        st.markdown("### Four key states of the ideal Stirling cycle")
-        st.caption(
-            "Each state is a frozen frame synchronized with the engine drawing, "
-            "the P-V marker, and the T-S marker."
-        )
+    engine_video = "assets/FINAL_01_engine_animation_half_speed.mp4"
+    pv_video_1 = "assets/FINAL_02_pv_prototype_animation_half_speed.mp4"
+    pv_video_2 = "assets/FINAL_03_pv_clean_animation_half_speed.mp4"
 
-        state_modes = [
-            ("State 1 — start of hot expansion", "Stage 1 — 1→2 Expansion"),
-            ("State 2 — end of hot expansion / start of cooling", "Stage 2 — 2→3 Cooling"),
-            ("State 3 — end of cooling / start of compression", "Stage 3 — 3→4 Compression"),
-            ("State 4 — end of compression / start of heating", "Stage 4 — 4→1 Heating"),
-        ]
+    engine_html = _autoplay_video_html(engine_video, max_width="760px")
+    if engine_html:
+        st.markdown("#### Engine cycle")
+        st.markdown(engine_html, unsafe_allow_html=True)
+    else:
+        st.warning(f"Engine animation not found: `{engine_video}`")
 
-        cols = st.columns(2)
-        for idx, (label, mode) in enumerate(state_modes):
-            with cols[idx % 2]:
-                with st.spinner(f"Rendering {label}..."):
-                    state_b64 = build_engine_animation(geom_frozen, params_frozen, mode)
+    c1, c2 = st.columns(2)
 
-                st.markdown(f"#### {label}")
+    with c1:
+        st.markdown("#### Real prototype P-V diagram")
+        pv1_html = _autoplay_video_html(pv_video_1, max_width="100%")
+        if pv1_html:
+            st.markdown(pv1_html, unsafe_allow_html=True)
+        else:
+            st.caption(f"Missing file: `{pv_video_1}`")
+
+    with c2:
+        st.markdown("#### Theoretical P-V diagram")
+        pv2_html = _autoplay_video_html(pv_video_2, max_width="100%")
+        if pv2_html:
+            st.markdown(pv2_html, unsafe_allow_html=True)
+        else:
+            st.caption(f"Missing file: `{pv_video_2}`")
+
+    st.divider()
+
+    # ─────────────────────────────────────────────────────────────────────
+    # Section 2 — Four states
+    # ─────────────────────────────────────────────────────────────────────
+    st.subheader("🔄 Four key stages of the Stirling cycle")
+
+    state_frames = [
+        (
+            "1-2",
+            "Isothermal compression",
+            "The working gas is compressed while its temperature is approximately constant. Work is supplied to the gas during this stage.",
+            "assets/state_000.png",
+        ),
+        (
+            "2-3",
+            "Isochoric heating",
+            "The volume is approximately constant. The gas receives heat through the regenerator and its pressure rises.",
+            "assets/state_090.png",
+        ),
+        (
+            "3-4",
+            "Isothermal expansion",
+            "The gas expands while its temperature is approximately constant. This is the main power-producing stage of the cycle.",
+            "assets/state_180.png",
+        ),
+        (
+            "4-1",
+            "Isochoric cooling",
+            "The volume is approximately constant. The gas gives heat back to the regenerator and its pressure decreases before the next compression.",
+            "assets/state_270.png",
+        ),
+    ]
+
+    cols = st.columns(4)
+    for col, (stage, title, desc, img_path) in zip(cols, state_frames):
+        with col:
+            st.markdown(f"### {stage}")
+            st.markdown(f"**{title}**")
+            img_file = Path(img_path)
+            if img_file.exists():
+                img_b64 = base64.b64encode(img_file.read_bytes()).decode("utf-8")
                 st.markdown(
-                    f'<img src="data:image/gif;base64,{state_b64}" '
-                    f'style="width:100%;border-radius:8px;" />',
+                    f'<img src="data:image/png;base64,{img_b64}" '
+                    f'style="width:100%;height:auto;border-radius:6px;" />',
                     unsafe_allow_html=True,
                 )
+            else:
+                st.caption(f"Missing frame: `{img_path}`")
+            st.caption(desc)
 
-        st.success("Animation and four synchronized states generated successfully.")
+    st.divider()
 
-    except Exception as e:
-        st.warning(f"Animation error: {e}")
+    # ─────────────────────────────────────────────────────────────────────
+    # Section 3 — Schmidt theory
+    # ─────────────────────────────────────────────────────────────────────
+    st.subheader("📐 Schmidt model theory")
 
-    st.caption(
-        "The animation is a qualitative educational visualization. "
-        "The P-V and T-S markers use the same phase as the engine animation."
+    st.markdown("""
+The Schmidt model is an ideal analytical model for a Stirling engine.  
+It estimates the cyclic pressure, indicated work, indicated power, heat input,
+heat rejection, and ideal efficiency from geometry and operating conditions.
+
+### 1. Main Schmidt assumptions
+
+- The working gas behaves as an ideal gas.
+- The total mass of working gas is constant.
+- Expansion and compression spaces are isothermal.
+- The expansion space is at the hot temperature.
+- The compression space is at the cold temperature.
+- The regenerator is ideal or represented by an effective temperature.
+- The piston and displacer motions are sinusoidal.
+- Engine speed is constant.
+- Flow losses, leakage, friction, and heat-transfer losses are neglected in the ideal Schmidt model.
+""")
+
+    st.markdown("### 2. Ideal gas law")
+    st.latex(r"pV = mRT")
+
+    st.markdown("### 3. Total gas volume")
+    st.latex(r"V_{total}(\theta)=V_e(\theta)+V_c(\theta)+V_r")
+    st.markdown("""
+Where:
+
+- \(V_e(\theta)\) — expansion-space volume
+- \(V_c(\theta)\) — compression-space volume
+- \(V_r\) — regenerator / dead volume
+
+Dead volumes do not directly create work because they are constant, but they affect the pressure.
+""")
+
+    st.markdown("### 4. Regenerator effective temperature")
+    st.latex(r"T_r=\frac{T_h-T_c}{\ln(T_h/T_c)}")
+
+    st.markdown("### 5. Schmidt pressure equation")
+    st.latex(
+        r"mR=P(\theta)\left("
+        r"\frac{V_e(\theta)}{T_h}+"
+        r"\frac{V_c(\theta)}{T_c}+"
+        r"\frac{V_r}{T_r}"
+        r"\right)"
     )
+    st.latex(
+        r"P(\theta)=\frac{mR}{"
+        r"\frac{V_e(\theta)}{T_h}+"
+        r"\frac{V_c(\theta)}{T_c}+"
+        r"\frac{V_r}{T_r}}"
+    )
+
+    st.markdown("### 6. Sinusoidal volume variation")
+    st.latex(r"V_e(\theta)=V_{cle}+\frac{V_{swe}}{2}\left(1+\cos\theta\right)")
+    st.latex(
+        r"V_c(\theta)=V_{clc}"
+        r"+\frac{V_{swc}}{2}\left(1+\cos(\theta+\phi)\right)"
+        r"+\frac{V_{swe}}{2}\left(1-\cos\theta\right)"
+    )
+
+    st.markdown("### 7. Work from the P-V integral")
+    st.latex(r"W_{cycle}=\oint P(\theta)\,dV(\theta)")
+    st.latex(
+        r"W_{cycle}=\int_0^{2\pi}P(\theta)"
+        r"\left[\frac{dV_e}{d\theta}+\frac{dV_c}{d\theta}\right]d\theta"
+    )
+
+    st.markdown("### 8. Full Schmidt indicated-power expression")
+    st.latex(r"P_{indicated}=f\cdot W_{cycle}")
+    st.latex(
+        r"P_{indicated}=f\int_0^{2\pi}P(\theta)"
+        r"\left[\frac{dV_e}{d\theta}+\frac{dV_c}{d\theta}\right]d\theta"
+    )
+    st.latex(
+        r"P_{indicated}=f\int_0^{2\pi}"
+        r"\frac{mR}{"
+        r"\frac{V_e(\theta)}{T_h}+"
+        r"\frac{V_c(\theta)}{T_c}+"
+        r"\frac{V_r}{T_r}}"
+        r"\left[\frac{dV_e}{d\theta}+\frac{dV_c}{d\theta}\right]d\theta"
+    )
+
+    st.markdown("### 9. Brake power")
+    st.latex(r"P_{brake}=\eta_{mech}\,P_{indicated}")
+
+    st.markdown("### 10. First law for a complete cycle")
+    st.latex(r"\Delta U_{cycle}=0")
+    st.latex(r"W_{cycle}=Q_{in}-Q_{out}")
+    st.markdown("The work is equal to the net heat input, not the total heat supplied from the hot source.")
+
+    st.markdown("### 11. Carnot efficiency limit")
+    st.latex(r"\eta_{Carnot}=1-\frac{T_c}{T_h}")
+
+    st.markdown("### 12. Ideal heat input")
+    st.latex(r"Q_{in,ideal}=\frac{W_{cycle}}{\eta_{Carnot}}")
+    st.latex(r"\dot{Q}_{in,ideal}=\frac{P_{indicated}}{\eta_{Carnot}}")
+
+    st.markdown("### 13. Heat rejection")
+    st.latex(r"Q_{out}=Q_{in}-W_{cycle}")
+    st.latex(r"\dot{Q}_{out}=\dot{Q}_{in}-P_{indicated}")
+
+    st.markdown("""
+### 14. Interpretation
+
+The Schmidt model gives an ideal baseline estimate.  
+It is useful for understanding how geometry, phase angle, temperature ratio, and frequency affect pressure,
+work, power, heat input, and efficiency.
+
+In this simulator, Schmidt analysis is used as a baseline.  
+The adiabatic-loss model then relaxes some ideal assumptions by including non-isothermal behavior,
+flow losses, regenerator imperfection, and heat-transfer losses.
+""")
 
 
 # ════════════════════════════════════════════════════════════════════════════
