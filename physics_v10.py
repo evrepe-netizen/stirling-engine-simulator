@@ -19,9 +19,9 @@ from scipy.optimize import brentq
 # ── Prototype defaults ───────────────────────────────────────────────────────
 PROTOTYPE = {
     'D_displacer': 75.0,    # mm
-    'S_displacer': 101.5,   # mm
+    'S_displacer': 120.0,   # mm
     'D_power':     65.6,    # mm
-    'S_power':     61.6,    # mm
+    'S_power':     65.6,    # mm
     'phi_deg':     90.0,    # degrees
     'D_r':         40.0,    # mm
     'L_r':         236.0,   # mm
